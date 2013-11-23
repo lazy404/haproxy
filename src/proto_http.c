@@ -214,6 +214,15 @@ const char *stat_status_codes[STAT_STATUS_SIZE] = {
 	[STAT_STATUS_UNKN] = "UNKN",
 };
 
+const char *HTTP_COOKIE_AUTH =
+	"HTTP/1.0 200 OK\r\n"
+	"Cache-Control: no-cache\r\n"
+	"Connection: close\r\n"
+	"Content-Type: text/html\r\n"
+    "Set-Cookie: %s=%s\r\n"
+    "Refresh: 5\r\n"
+	"\r\n"
+	"<html><body><h1>Eat the cooie !!</h1></body></html>\n";
 
 /* We must put the messages here since GCC cannot initialize consts depending
  * on strlen().
@@ -1350,6 +1359,44 @@ get_http_auth(struct session *s)
 	}
 
 	return 0;
+}
+
+int
+get_cookie_auth(struct session *s)
+{
+
+	struct http_txn *txn = &s->txn;
+	struct hdr_ctx ctx;
+	char *h, *p;
+	int len;
+
+	ctx.idx = 0;
+
+
+	h = "Cookie";
+	len = strlen(h);
+    
+	if (!http_find_header2(h, len, s->req->buf->p, &txn->hdr_idx, &ctx))
+		return 0;
+    
+	h = ctx.line + ctx.val;
+    
+	p = memchr(h, '=', ctx.vlen);
+
+	if (!p || p == h)
+		return 0;
+
+    p++;
+    
+    //chunk_printf(&trash, "p '%s'\n", p);
+    //if (write(1, trash.str, trash.len) < 0) /* shut gcc warning */;
+    
+    if( (memcmp("name", h, 4) == 0 ) && (memcmp("dupa",p, 4) == 0 ))
+        return 1;
+    else
+        return 0;
+    
+	return 1;
 }
 
 
@@ -3221,6 +3268,9 @@ http_req_get_intercept_rule(struct proxy *px, struct list *rules, struct session
 		case HTTP_REQ_ACT_AUTH:
 			return rule;
 
+		case HTTP_REQ_ACT_COOKIE_AUTH:
+			return rule;
+
 		case HTTP_REQ_ACT_REDIR:
 			return rule;
 
@@ -3761,6 +3811,15 @@ int http_process_req_common(struct session *s, struct channel *req, int an_bit, 
 		session_inc_http_err_ctr(s);
 		goto return_prx_cond;
 	}
+
+	if (http_req_last_rule && http_req_last_rule->action == HTTP_REQ_ACT_COOKIE_AUTH) {
+		chunk_printf(&trash, HTTP_COOKIE_AUTH, "name", "dupa");
+		txn->status = 200;
+		stream_int_retnclose(req->prod, &trash);
+	
+		goto return_prx_cond;
+	}
+
 
 	/* add request headers from the rule sets in the same order */
 	list_for_each_entry(wl, &px->req_add, list) {
@@ -8217,7 +8276,7 @@ void debug_hdr(const char *dir, struct session *t, const char *start, const char
 	UBOUND(max, trash.size - trash.len - 3);
 	trash.len += strlcpy2(trash.str + trash.len, start, max + 1);
 	trash.str[trash.len++] = '\n';
-	if (write(1, trash.str, trash.len) < 0) /* shut gcc warning */;
+	if (write(1, trash.str, trash.len) < 0) /* shut gcc warning */{};
 }
 
 /*
@@ -8379,6 +8438,9 @@ struct http_req_rule *parse_http_req_cond(const char **args, const char *file, i
 		cur_arg = 1;
 	} else if (!strcmp(args[0], "auth")) {
 		rule->action = HTTP_REQ_ACT_AUTH;
+		cur_arg = 1;
+	} else if (!strcmp(args[0], "cookie_auth")) {
+		rule->action = HTTP_REQ_ACT_COOKIE_AUTH;
 		cur_arg = 1;
 
 		while(*args[cur_arg]) {
@@ -9573,6 +9635,26 @@ smp_fetch_http_first_req(struct proxy *px, struct session *s, void *l7, unsigned
 	return 1;
 }
 
+static int
+smp_fetch_cookie_auth(struct proxy *px, struct session *l4, void *l7, unsigned int opt,
+                    const struct arg *args, struct sample *smp, const char *kw)
+{
+
+/*	if (!args || args->type != ARGT_USR)
+		return 0;
+*/
+	CHECK_HTTP_MESSAGE_FIRST();
+
+	if (!get_cookie_auth(l4))
+		return 0;
+
+	smp->type = SMP_T_BOOL;
+    
+	smp->data.uint = 1;
+	//smp->data.uint = check_user(args->data.usr, 0, l4->txn.auth.user, l4->txn.auth.pass);
+	return 1;
+}
+
 /* Accepts exactly 1 argument of type userlist */
 static int
 smp_fetch_http_auth(struct proxy *px, struct session *l4, void *l7, unsigned int opt,
@@ -10203,6 +10285,9 @@ static struct sample_fetch_kw_list sample_fetch_keywords = {ILH, {
 	{ "hdr_ip",          smp_fetch_hdr_ip,         ARG2(0,STR,SINT), val_hdr, SMP_T_IPV4, SMP_USE_HRQHV },
 	{ "hdr_val",         smp_fetch_hdr_val,        ARG2(0,STR,SINT), val_hdr, SMP_T_UINT, SMP_USE_HRQHV },
 
+	{ "cookie_auth",       smp_fetch_cookie_auth,      0,      NULL,    SMP_T_BOOL, SMP_USE_HRQHV },
+//	{ "cookie_auth",       smp_fetch_cookie_auth,      ARG1(1,USR),      NULL,    SMP_T_BOOL, SMP_USE_HRQHV },
+    
 	{ "http_auth",       smp_fetch_http_auth,      ARG1(1,USR),      NULL,    SMP_T_BOOL, SMP_USE_HRQHV },
 	{ "http_auth_group", smp_fetch_http_auth_grp,  ARG1(1,USR),      NULL,    SMP_T_BOOL, SMP_USE_HRQHV },
 	{ "http_first_req",  smp_fetch_http_first_req, 0,                NULL,    SMP_T_BOOL, SMP_USE_HRQHP },

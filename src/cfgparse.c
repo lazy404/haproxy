@@ -2636,7 +2636,8 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 		    (LIST_PREV(&curproxy->http_req_rules, struct http_req_rule *, list)->action == HTTP_REQ_ACT_ALLOW ||
 		     LIST_PREV(&curproxy->http_req_rules, struct http_req_rule *, list)->action == HTTP_REQ_ACT_DENY ||
 		     LIST_PREV(&curproxy->http_req_rules, struct http_req_rule *, list)->action == HTTP_REQ_ACT_REDIR ||
-		     LIST_PREV(&curproxy->http_req_rules, struct http_req_rule *, list)->action == HTTP_REQ_ACT_AUTH)) {
+		     LIST_PREV(&curproxy->http_req_rules, struct http_req_rule *, list)->action == HTTP_REQ_ACT_AUTH ||
+		     LIST_PREV(&curproxy->http_req_rules, struct http_req_rule *, list)->action == HTTP_REQ_ACT_COOKIE_AUTH)) {
 			Warning("parsing [%s:%d]: previous '%s' action is final and has no condition attached, further entries are NOOP.\n",
 			        file, linenum, args[0]);
 			err_code |= ERR_WARN;
