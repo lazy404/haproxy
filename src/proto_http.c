@@ -214,7 +214,7 @@ const char *stat_status_codes[STAT_STATUS_SIZE] = {
 	[STAT_STATUS_UNKN] = "UNKN",
 };
 
-const char *HTTP_COOKIE_AUTH =
+/*const char *HTTP_COOKIE_AUTH =
 	"HTTP/1.0 200 OK\r\n"
 	"Cache-Control: no-cache\r\n"
 	"Connection: close\r\n"
@@ -223,6 +223,27 @@ const char *HTTP_COOKIE_AUTH =
     "Refresh: 5\r\n"
 	"\r\n"
 	"<html><body><h1>Eat the cooie !!</h1></body></html>\n";
+*/
+const char *HTTP_COOKIE_AUTH =
+	"HTTP/1.0 200 OK\r\n"
+	"Cache-Control: no-cache\r\n"
+	"Connection: close\r\n"
+	"Content-Type: text/html\r\n"
+    "Refresh: 5\r\n"
+	"\r\n"
+	"<html>\n"
+    "<head>\n"
+    "<script>\n"
+    "function setCookie()"
+    "{"
+    "document.cookie='name=dupa';"
+    "}"
+    "</script>\n"
+    "</head>\n"
+    "<body onload=\"setCookie()\">"
+    "<h1>javascript cookie set</h1>"
+    "</body>"
+    "</html>\n";
 
 /* We must put the messages here since GCC cannot initialize consts depending
  * on strlen().
@@ -1361,13 +1382,15 @@ get_http_auth(struct session *s)
 	return 0;
 }
 
+char *find_cookie_value_end(char *s, const char *e);
+
 int
 get_cookie_auth(struct session *s)
 {
 
 	struct http_txn *txn = &s->txn;
 	struct hdr_ctx ctx;
-	char *h, *p;
+	char *h, *p, *end,*tmp;
 	int len;
 
 	ctx.idx = 0;
@@ -1379,24 +1402,28 @@ get_cookie_auth(struct session *s)
 	if (!http_find_header2(h, len, s->req->buf->p, &txn->hdr_idx, &ctx))
 		return 0;
     
-	h = ctx.line + ctx.val;
-    
-	p = memchr(h, '=', ctx.vlen);
+	h=tmp=ctx.line + ctx.val;
 
-	if (!p || p == h)
-		return 0;
+    end=ctx.line + ctx.vlen;
+    
+	while(h < end) {
+        p = memchr(h, '=', end-h);
+        if (!p || p == h)
+		    return 0;
 
-    p++;
+        p++;
+        tmp = find_cookie_value_end(p, end);
+        
+        chunk_printf(&trash, "end=%x,tmp=%x, h='%s' p='%s' tmp='%s'\n", end, tmp, h, p, tmp);
+        write(1, trash.str, trash.len);
+        //write(1, h, ctx.vlen);
+        if( (memcmp("name", h, 4) == 0 ) && (memcmp("dupa",p, 4) == 0 ))
+            return 0;
+
+        h=tmp+2;
+    }
     
-    //chunk_printf(&trash, "p '%s'\n", p);
-    //if (write(1, trash.str, trash.len) < 0) /* shut gcc warning */;
-    
-    if( (memcmp("name", h, 4) == 0 ) && (memcmp("dupa",p, 4) == 0 ))
-        return 1;
-    else
-        return 0;
-    
-	return 1;
+	return 0;
 }
 
 
