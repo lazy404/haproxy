@@ -21,8 +21,10 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#include <common/chunk.h>
 #include <common/config.h>
 #include <common/standard.h>
+#include <types/global.h>
 #include <eb32tree.h>
 
 /* enough to store NB_ITOA_STR integers of :
@@ -550,25 +552,8 @@ static struct sockaddr_storage *str2ip(const char *str, struct sockaddr_storage 
 		return sa;
 	}
 
-	/* try to resolve an IPv4/IPv6 hostname */
-	he = gethostbyname(str);
-	if (he) {
-		if (!sa->ss_family || sa->ss_family == AF_UNSPEC)
-			sa->ss_family = he->h_addrtype;
-		else if (sa->ss_family != he->h_addrtype)
-			goto fail;
-
-		switch (sa->ss_family) {
-		case AF_INET:
-			((struct sockaddr_in *)sa)->sin_addr = *(struct in_addr *) *(he->h_addr_list);
-			return sa;
-		case AF_INET6:
-			((struct sockaddr_in6 *)sa)->sin6_addr = *(struct in6_addr *) *(he->h_addr_list);
-			return sa;
-		}
-	}
 #ifdef USE_GETADDRINFO
-	else {
+	if (global.tune.options & GTUNE_USE_GAI) {
 		struct addrinfo hints, *result;
 
 		memset(&result, 0, sizeof(result));
@@ -598,6 +583,24 @@ static struct sockaddr_storage *str2ip(const char *str, struct sockaddr_storage 
 			freeaddrinfo(result);
 	}
 #endif
+	/* try to resolve an IPv4/IPv6 hostname */
+	he = gethostbyname(str);
+	if (he) {
+		if (!sa->ss_family || sa->ss_family == AF_UNSPEC)
+			sa->ss_family = he->h_addrtype;
+		else if (sa->ss_family != he->h_addrtype)
+			goto fail;
+
+		switch (sa->ss_family) {
+		case AF_INET:
+			((struct sockaddr_in *)sa)->sin_addr = *(struct in_addr *) *(he->h_addr_list);
+			return sa;
+		case AF_INET6:
+			((struct sockaddr_in6 *)sa)->sin6_addr = *(struct in6_addr *) *(he->h_addr_list);
+			return sa;
+		}
+	}
+
 	/* unsupported address family */
  fail:
 	return NULL;
@@ -632,6 +635,11 @@ static struct sockaddr_storage *str2ip(const char *str, struct sockaddr_storage 
  *    - "ipv6@"  => force address to resolve as IPv6 and fail if not possible.
  *    - "unix@"  => force address to be a path to a UNIX socket even if the
  *                  path does not start with a '/'
+ *    - 'abns@'  -> force address to belong to the abstract namespace (Linux
+ *                  only). These sockets are just like Unix sockets but without
+ *                  the need for an underlying file system. The address is a
+ *                  string. Technically it's like a Unix socket with a zero in
+ *                  the first byte of the address.
  *    - "fd@"    => an integer must follow, and is a file descriptor number.
  *
  * Also note that in order to avoid any ambiguity with IPv6 addresses, the ':'
@@ -652,6 +660,7 @@ struct sockaddr_storage *str2sa_range(const char *str, int *low, int *high, char
 	char *back, *str2;
 	char *port1, *port2;
 	int portl, porth, porta;
+	int abstract = 0;
 
 	portl = porth = porta = 0;
 
@@ -665,6 +674,12 @@ struct sockaddr_storage *str2sa_range(const char *str, int *low, int *high, char
 
 	if (strncmp(str2, "unix@", 5) == 0) {
 		str2 += 5;
+		abstract = 0;
+		ss.ss_family = AF_UNIX;
+	}
+	else if (strncmp(str2, "abns@", 5) == 0) {
+		str2 += 5;
+		abstract = 1;
 		ss.ss_family = AF_UNIX;
 	}
 	else if (strncmp(str2, "ipv4@", 5) == 0) {
@@ -698,26 +713,26 @@ struct sockaddr_storage *str2sa_range(const char *str, int *low, int *high, char
 	else if (ss.ss_family == AF_UNIX) {
 		int prefix_path_len;
 		int max_path_len;
+		int adr_len;
 
 		/* complete unix socket path name during startup or soft-restart is
 		 * <unix_bind_prefix><path>.<pid>.<bak|tmp>
 		 */
-		prefix_path_len = pfx ? strlen(pfx) : 0;
+		prefix_path_len = (pfx && !abstract) ? strlen(pfx) : 0;
 		max_path_len = (sizeof(((struct sockaddr_un *)&ss)->sun_path) - 1) -
 			(prefix_path_len ? prefix_path_len + 1 + 5 + 1 + 3 : 0);
 
-		if (strlen(str2) > max_path_len) {
+		adr_len = strlen(str2);
+		if (adr_len > max_path_len) {
 			memprintf(err, "socket path '%s' too long (max %d)\n", str, max_path_len);
 			goto out;
 		}
 
-		if (pfx) {
+		/* when abstract==1, we skip the first zero and copy all bytes except the trailing zero */
+		memset(((struct sockaddr_un *)&ss)->sun_path, 0, sizeof(((struct sockaddr_un *)&ss)->sun_path));
+		if (prefix_path_len)
 			memcpy(((struct sockaddr_un *)&ss)->sun_path, pfx, prefix_path_len);
-			strcpy(((struct sockaddr_un *)&ss)->sun_path + prefix_path_len, str2);
-		}
-		else {
-			strcpy(((struct sockaddr_un *)&ss)->sun_path, str2);
-		}
+		memcpy(((struct sockaddr_un *)&ss)->sun_path + prefix_path_len + abstract, str2, adr_len + 1 - abstract);
 	}
 	else { /* IPv4 and IPv6 */
 		port1 = strrchr(str2, ':');
@@ -790,13 +805,25 @@ int str2mask(const char *str, struct in_addr *mask)
 	return 1;
 }
 
+/* convert <cidr> to struct in_addr <mask>. It returns 1 if the conversion
+ * succeeds otherwise zero.
+ */
+int cidr2dotted(int cidr, struct in_addr *mask) {
+
+	if (cidr < 0 || cidr > 32)
+		return 0;
+
+	mask->s_addr = cidr ? htonl(~0UL << (32 - cidr)) : 0;
+	return 1;
+}
+
 /*
  * converts <str> to two struct in_addr* which must be pre-allocated.
  * The format is "addr[/mask]", where "addr" cannot be empty, and mask
  * is optionnal and either in the dotted or CIDR notation.
  * Note: "addr" can also be a hostname. Returns 1 if OK, 0 if error.
  */
-int str2net(const char *str, struct in_addr *addr, struct in_addr *mask)
+int str2net(const char *str, int resolve, struct in_addr *addr, struct in_addr *mask)
 {
 	__label__ out_free, out_err;
 	char *c, *s;
@@ -820,6 +847,9 @@ int str2net(const char *str, struct in_addr *addr, struct in_addr *mask)
 	}
 	if (!inet_pton(AF_INET, s, addr)) {
 		struct hostent *he;
+
+		if (!resolve)
+			goto out_err;
 
 		if ((he = gethostbyname(s)) == NULL) {
 			goto out_err;
@@ -923,20 +953,25 @@ int url2ipv4(const char *addr, struct in_addr *dst)
 }
 
 /*
- * Resolve destination server from URL. Convert <str> to a sockaddr_storage*.
+ * Resolve destination server from URL. Convert <str> to a sockaddr_storage.
+ * <out> contain the code of the dectected scheme, the start and length of
+ * the hostname. Actually only http and https are supported. <out> can be NULL.
+ * This function returns the consumed length. It is useful if you parse complete
+ * url like http://host:port/path, because the consumed length corresponds to
+ * the first character of the path. If the conversion fails, it returns -1.
+ *
+ * This function tries to resolve the DNS name if haproxy is in starting mode.
+ * So, this function may be used during the configuration parsing.
  */
-int url2sa(const char *url, int ulen, struct sockaddr_storage *addr)
+int url2sa(const char *url, int ulen, struct sockaddr_storage *addr, struct split_url *out)
 {
 	const char *curr = url, *cp = url;
+	const char *end;
 	int ret, url_code = 0;
-	unsigned int http_code = 0;
-
-	/* Cleanup the room */
-
-	/* FIXME: assume IPv4 only for now */
-	((struct sockaddr_in *)addr)->sin_family = AF_INET;
-	((struct sockaddr_in *)addr)->sin_addr.s_addr = 0;
-	((struct sockaddr_in *)addr)->sin_port = 0;
+	unsigned long long int http_code = 0;
+	int default_port;
+	struct hostent *he;
+	char *p;
 
 	/* Firstly, try to find :// pattern */
 	while (curr < url+ulen && url_code != 0x3a2f2f) {
@@ -950,28 +985,138 @@ int url2sa(const char *url, int ulen, struct sockaddr_storage *addr)
 	 * 
 	 * WARNING: Current code doesn't support dynamic async dns resolver.
 	 */
-	if (url_code == 0x3a2f2f) {
-		while (cp < curr - 3)
-			http_code = (http_code << 8) + *cp++;
-		http_code |= 0x20202020;			/* Turn everything to lower case */
-		
-		/* HTTP url matching */
-		if (http_code == 0x68747470) {
-			/* We are looking for IP address. If you want to parse and
-			 * resolve hostname found in url, you can use str2sa_range(), but
-			 * be warned this can slow down global daemon performances
-			 * while handling lagging dns responses.
-			 */
-			ret = url2ipv4(curr, &((struct sockaddr_in *)addr)->sin_addr);
-			if (!ret)
-				return -1;
-			curr += ret;
-			((struct sockaddr_in *)addr)->sin_port = (*curr == ':') ? str2uic(++curr) : 80;
-			((struct sockaddr_in *)addr)->sin_port = htons(((struct sockaddr_in *)addr)->sin_port);
-		}
-		return 0;
-	}
+	if (url_code != 0x3a2f2f)
+		return -1;
 
+	/* Copy scheme, and utrn to lower case. */
+	while (cp < curr - 3)
+		http_code = (http_code << 8) + *cp++;
+	http_code |= 0x2020202020202020ULL;			/* Turn everything to lower case */
+		
+	/* HTTP or HTTPS url matching */
+	if (http_code == 0x2020202068747470ULL) {
+		default_port = 80;
+		if (out)
+			out->scheme = SCH_HTTP;
+	}
+	else if (http_code == 0x2020206874747073ULL) {
+		default_port = 443;
+		if (out)
+			out->scheme = SCH_HTTPS;
+	}
+	else
+		return -1;
+
+	/* If the next char is '[', the host address is IPv6. */
+	if (*curr == '[') {
+		curr++;
+
+		/* Check trash size */
+		if (trash.size < ulen)
+			return -1;
+
+		/* Look for ']' and copy the address in a trash buffer. */
+		p = trash.str;
+		for (end = curr;
+		     end < url + ulen && *end != ']';
+		     end++, p++)
+			*p = *end;
+		if (*end != ']')
+			return -1;
+		*p = '\0';
+
+		/* Update out. */
+		if (out) {
+			out->host = curr;
+			out->host_len = end - curr;
+		}
+
+		/* Try IPv6 decoding. */
+		if (!inet_pton(AF_INET6, trash.str, &((struct sockaddr_in6 *)addr)->sin6_addr))
+			return -1;
+		end++;
+
+		/* Decode port. */
+		if (*end == ':') {
+			end++;
+			default_port = read_uint(&end, url + ulen);
+		}
+		((struct sockaddr_in6 *)addr)->sin6_port = htons(default_port);
+		((struct sockaddr_in6 *)addr)->sin6_family = AF_INET6;
+		return end - url;
+	}
+	else {
+		/* We are looking for IP address. If you want to parse and
+		 * resolve hostname found in url, you can use str2sa_range(), but
+		 * be warned this can slow down global daemon performances
+		 * while handling lagging dns responses.
+		 */
+		ret = url2ipv4(curr, &((struct sockaddr_in *)addr)->sin_addr);
+		if (ret) {
+			/* Update out. */
+			if (out) {
+				out->host = curr;
+				out->host_len = ret;
+			}
+
+			curr += ret;
+
+			/* Decode port. */
+			if (*curr == ':') {
+				curr++;
+				default_port = read_uint(&curr, url + ulen);
+			}
+			((struct sockaddr_in *)addr)->sin_port = htons(default_port);
+
+			/* Set family. */
+			((struct sockaddr_in *)addr)->sin_family = AF_INET;
+			return curr - url;
+		}
+		else if (global.mode & MODE_STARTING) {
+			/* The IPv4 and IPv6 decoding fails, maybe the url contain name. Try to execute
+			 * synchronous DNS request only if HAProxy is in the start state.
+			 */
+
+			/* look for : or / or end */
+			for (end = curr;
+			     end < url + ulen && *end != '/' && *end != ':';
+			     end++);
+			memcpy(trash.str, curr, end - curr);
+			trash.str[end - curr] = '\0';
+
+			/* try to resolve an IPv4/IPv6 hostname */
+			he = gethostbyname(trash.str);
+			if (!he)
+				return -1;
+
+			/* Update out. */
+			if (out) {
+				out->host = curr;
+				out->host_len = end - curr;
+			}
+
+			/* Decode port. */
+			if (*end == ':') {
+				end++;
+				default_port = read_uint(&end, url + ulen);
+			}
+
+			/* Copy IP address, set port and family. */
+			switch (he->h_addrtype) {
+			case AF_INET:
+				((struct sockaddr_in *)addr)->sin_addr = *(struct in_addr *) *(he->h_addr_list);
+				((struct sockaddr_in *)addr)->sin_port = htons(default_port);
+				((struct sockaddr_in *)addr)->sin_family = AF_INET;
+				return end - url;
+
+			case AF_INET6:
+				((struct sockaddr_in6 *)addr)->sin6_addr = *(struct in6_addr *) *(he->h_addr_list);
+				((struct sockaddr_in6 *)addr)->sin6_port = htons(default_port);
+				((struct sockaddr_in6 *)addr)->sin6_family = AF_INET6;
+				return end - url;
+			}
+		}
+	}
 	return -1;
 }
 
@@ -1039,6 +1184,36 @@ char *encode_string(char *start, char *stop,
 				*start++ = hextab[*string & 15];
 			}
 			string++;
+		}
+		*start = '\0';
+	}
+	return start;
+}
+
+/*
+ * Same behavior as encode_string() above, except that it encodes chunk
+ * <chunk> instead of a string.
+ */
+char *encode_chunk(char *start, char *stop,
+		    const char escape, const fd_set *map,
+		    const struct chunk *chunk)
+{
+	char *str = chunk->str;
+	char *end = chunk->str + chunk->len;
+
+	if (start < stop) {
+		stop--; /* reserve one byte for the final '\0' */
+		while (start < stop && str < end) {
+			if (!FD_ISSET((unsigned char)(*str), map))
+				*start++ = *str;
+			else {
+				if (start + 3 >= stop)
+					break;
+				*start++ = escape;
+				*start++ = hextab[(*str >> 4) & 15];
+				*start++ = hextab[*str & 15];
+			}
+			str++;
 		}
 		*start = '\0';
 	}
@@ -1226,6 +1401,50 @@ int strl2llrc(const char *s, int len, long long *ret)
 	return 0;
 }
 
+/* This function is used with pat_parse_dotted_ver(). It converts a string
+ * composed by two number separated by a dot. Each part must contain in 16 bits
+ * because internally they will be represented as a 32-bit quantity stored in
+ * a 64-bit integer. It returns zero when the number has successfully been
+ * converted, non-zero otherwise. When an error is returned, the <ret> value
+ * is left untouched.
+ *
+ *    "1.3"         -> 0x0000000000010003
+ *    "65535.65535" -> 0x00000000ffffffff
+ */
+int strl2llrc_dotted(const char *text, int len, long long *ret)
+{
+	const char *end = &text[len];
+	const char *p;
+	long long major, minor;
+
+	/* Look for dot. */
+	for (p = text; p < end; p++)
+		if (*p == '.')
+			break;
+
+	/* Convert major. */
+	if (strl2llrc(text, p - text, &major) != 0)
+		return 1;
+
+	/* Check major. */
+	if (major >= 65536)
+		return 1;
+
+	/* Convert minor. */
+	minor = 0;
+	if (p < end)
+		if (strl2llrc(p + 1, end - (p + 1), &minor) != 0)
+			return 1;
+
+	/* Check minor. */
+	if (minor >= 65536)
+		return 1;
+
+	/* Compose value. */
+	*ret = (major << 16) | (minor & 0xffff);
+	return 0;
+}
+
 /* This function parses a time value optionally followed by a unit suffix among
  * "d", "h", "m", "s", "ms" or "us". It converts the value into the unit
  * expected by the caller. The computation does its best to avoid overflows.
@@ -1356,6 +1575,62 @@ const char *parse_size_err(const char *text, unsigned *ret) {
 	return NULL;
 }
 
+/*
+ * Parse binary string written in hexadecimal (source) and store the decoded
+ * result into binstr and set binstrlen to the lengh of binstr. Memory for
+ * binstr is allocated by the function. In case of error, returns 0 with an
+ * error message in err. In succes case, it returns the consumed length.
+ */
+int parse_binary(const char *source, char **binstr, int *binstrlen, char **err)
+{
+	int len;
+	const char *p = source;
+	int i,j;
+	int alloc;
+
+	len = strlen(source);
+	if (len % 2) {
+		memprintf(err, "an even number of hex digit is expected");
+		return 0;
+	}
+
+	len = len >> 1;
+
+	if (!*binstr) {
+		*binstr = calloc(len, sizeof(char));
+		if (!*binstr) {
+			memprintf(err, "out of memory while loading string pattern");
+			return 0;
+		}
+		alloc = 1;
+	}
+	else {
+		if (*binstrlen < len) {
+			memprintf(err, "no space avalaible in the buffer. expect %d, provides %d",
+			          len, *binstrlen);
+			return 0;
+		}
+		alloc = 0;
+	}
+	*binstrlen = len;
+
+	i = j = 0;
+	while (j < len) {
+		if (!ishex(p[i++]))
+			goto bad_input;
+		if (!ishex(p[i++]))
+			goto bad_input;
+		(*binstr)[j++] =  (hex2i(p[i-2]) << 4) + hex2i(p[i-1]);
+	}
+	return len << 1;
+
+bad_input:
+	memprintf(err, "an hex digit is expected (found '%c')", p[i-1]);
+	if (alloc)
+		free(binstr);
+	return 0;
+}
+
 /* copies at most <n> characters from <src> and always terminates with '\0' */
 char *my_strndup(const char *src, int n)
 {
@@ -1371,6 +1646,31 @@ char *my_strndup(const char *src, int n)
 	memcpy(ret, src, len);
 	ret[len] = '\0';
 	return ret;
+}
+
+/*
+ * search needle in haystack
+ * returns the pointer if found, returns NULL otherwise
+ */
+const void *my_memmem(const void *haystack, size_t haystacklen, const void *needle, size_t needlelen)
+{
+	const void *c = NULL;
+	unsigned char f;
+
+	if ((haystack == NULL) || (needle == NULL) || (haystacklen < needlelen))
+		return NULL;
+
+	f = *(char *)needle;
+	c = haystack;
+	while ((c = memchr(c, f, haystacklen - (c - haystack))) != NULL) {
+		if ((haystacklen - (c - haystack)) < needlelen)
+			return NULL;
+
+		if (memcmp(c, needle, needlelen) == 0)
+			return c;
+		++c;
+	}
+	return NULL;
 }
 
 /* This function returns the first unused key greater than or equal to <key> in
@@ -1577,6 +1877,7 @@ unsigned int inetaddr_host_lim_ret(char *text, char *stop, char **ret)
  * or the number of chars read in case of success. Maybe this could be replaced
  * by one of the functions above. Also, apparently this function does not support
  * hosts above 255 and requires exactly 4 octets.
+ * The destination is only modified on success.
  */
 int buf2ip(const char *buf, size_t len, struct in_addr *dst)
 {
@@ -1623,6 +1924,29 @@ int buf2ip(const char *buf, size_t len, struct in_addr *dst)
 
 	memcpy(&dst->s_addr, tmp, 4);
 	return addr - cp;
+}
+
+/* This function converts the string in <buf> of the len <len> to
+ * struct in6_addr <dst> which must be allocated by the caller.
+ * This function returns 1 in success case, otherwise zero.
+ * The destination is only modified on success.
+ */
+int buf2ip6(const char *buf, size_t len, struct in6_addr *dst)
+{
+	char null_term_ip6[INET6_ADDRSTRLEN + 1];
+	struct in6_addr out;
+
+	if (len > INET6_ADDRSTRLEN)
+		return 0;
+
+	memcpy(null_term_ip6, buf, len);
+	null_term_ip6[len] = '\0';
+
+	if (!inet_pton(AF_INET6, null_term_ip6, &out))
+		return 0;
+
+	*dst = out;
+	return 1;
 }
 
 /* To be used to quote config arg positions. Returns the short string at <ptr>
@@ -1700,11 +2024,16 @@ const char rfc4291_pfx[] = { 0x00, 0x00, 0x00, 0x00,
 			     0x00, 0x00, 0x00, 0x00,
 			     0x00, 0x00, 0xFF, 0xFF };
 
-/* Map IPv4 adress on IPv6 address, as specified in RFC 3513. */
+/* Map IPv4 adress on IPv6 address, as specified in RFC 3513.
+ * Input and output may overlap.
+ */
 void v4tov6(struct in6_addr *sin6_addr, struct in_addr *sin_addr)
 {
+	struct in_addr tmp_addr;
+
+	tmp_addr.s_addr = sin_addr->s_addr;
 	memcpy(sin6_addr->s6_addr, rfc4291_pfx, sizeof(rfc4291_pfx));
-	memcpy(sin6_addr->s6_addr+12, &sin_addr->s_addr, 4);
+	memcpy(sin6_addr->s6_addr+12, &tmp_addr.s_addr, 4);
 }
 
 /* Map IPv6 adress on IPv4 address, as specified in RFC 3513.
@@ -1724,10 +2053,11 @@ int v6tov4(struct in_addr *sin_addr, struct in6_addr *sin6_addr)
 char *human_time(int t, short hz_div) {
 	static char rv[sizeof("24855d23h")+1];	// longest of "23h59m" and "59m59s"
 	char *p = rv;
+	char *end = rv + sizeof(rv);
 	int cnt=2;				// print two numbers
 
 	if (unlikely(t < 0 || hz_div <= 0)) {
-		sprintf(p, "?");
+		snprintf(p, end - p, "?");
 		return rv;
 	}
 
@@ -1735,22 +2065,22 @@ char *human_time(int t, short hz_div) {
 		t /= hz_div;
 
 	if (t >= DAY) {
-		p += sprintf(p, "%dd", t / DAY);
+		p += snprintf(p, end - p, "%dd", t / DAY);
 		cnt--;
 	}
 
 	if (cnt && t % DAY / HOUR) {
-		p += sprintf(p, "%dh", t % DAY / HOUR);
+		p += snprintf(p, end - p, "%dh", t % DAY / HOUR);
 		cnt--;
 	}
 
 	if (cnt && t % HOUR / MINUTE) {
-		p += sprintf(p, "%dm", t % HOUR / MINUTE);
+		p += snprintf(p, end - p, "%dm", t % HOUR / MINUTE);
 		cnt--;
 	}
 
 	if ((cnt && t % MINUTE) || !t)					// also display '0s'
-		p += sprintf(p, "%ds", t % MINUTE / SEC);
+		p += snprintf(p, end - p, "%ds", t % MINUTE / SEC);
 
 	return rv;
 }

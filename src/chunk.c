@@ -33,7 +33,9 @@ static char *trash_buf2;
 * type of conversion. Two chunks and their respective buffers are alternatively
 * returned so that it is always possible to iterate data transformations without
 * losing the data being transformed. The blocks are initialized to the size of
-* a standard buffer, so they should be enough for everything.
+* a standard buffer, so they should be enough for everything. For convenience,
+* a zero is always emitted at the beginning of the string so that it may be
+* used as an empty string as well.
 */
 struct chunk *get_trash_chunk(void)
 {
@@ -47,16 +49,19 @@ struct chunk *get_trash_chunk(void)
 		trash_chunk = &trash_chunk1;
 		trash_buf = trash_buf1;
 	}
+	*trash_buf = 0;
 	chunk_init(trash_chunk, trash_buf, trash_size);
 	return trash_chunk;
 }
 
-/* Allocates the trash buffers. Returns 0 in case of failure. */
+/* (re)allocates the trash buffers. Returns 0 in case of failure. It is
+ * possible to call this function multiple times if the trash size changes.
+ */
 int alloc_trash_buffers(int bufsize)
 {
 	trash_size = bufsize;
-	trash_buf1 = (char *)calloc(1, bufsize);
-	trash_buf2 = (char *)calloc(1, bufsize);
+	trash_buf1 = (char *)realloc(trash_buf1, bufsize);
+	trash_buf2 = (char *)realloc(trash_buf2, bufsize);
 	return trash_buf1 && trash_buf2;
 }
 
@@ -202,8 +207,10 @@ int chunk_strcmp(const struct chunk *chk, const char *str)
 	int diff = 0;
 
 	do {
-		if (--len < 0)
+		if (--len < 0) {
+			diff = (unsigned char)0 - (unsigned char)*str;
 			break;
+		}
 		diff = (unsigned char)*(s1++) - (unsigned char)*(str++);
 	} while (!diff);
 	return diff;
@@ -220,8 +227,10 @@ int chunk_strcasecmp(const struct chunk *chk, const char *str)
 	int diff = 0;
 
 	do {
-		if (--len < 0)
+		if (--len < 0) {
+			diff = (unsigned char)0 - (unsigned char)*str;
 			break;
+		}
 		diff = (unsigned char)*s1 - (unsigned char)*str;
 		if (unlikely(diff)) {
 			unsigned int l = (unsigned char)*s1;

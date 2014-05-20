@@ -17,6 +17,7 @@
 #   USE_PCRE_JIT         : enable JIT for faster regex on libpcre >= 8.32
 #   USE_POLL             : enable poll(). Automatic.
 #   USE_PRIVATE_CACHE    : disable shared memory cache of ssl sessions.
+#   USE_PTHREAD_PSHARED  : enable pthread process shared mutex on sslcache.
 #   USE_REGPARM          : enable regparm optimization. Recommended on x86.
 #   USE_STATIC_PCRE      : enable static libpcre. Recommended.
 #   USE_TPROXY           : enable transparent proxy. Automatic.
@@ -51,6 +52,8 @@
 #          by "haproxy -vv" in CFLAGS.
 #   SILENT_DEFINE may be used to specify other defines which will not be
 #     reported by "haproxy -vv".
+#   EXTRA   is used to force building or not building some extra tools. By
+#           default on Linux 2.6+, it contains "haproxy-systemd-wrapper".
 #   DESTDIR is not set by default and is used for installation only.
 #           It might be useful to set DESTDIR if you want to install haproxy
 #           in a sandbox.
@@ -86,7 +89,7 @@ DOCDIR = $(PREFIX)/doc/haproxy
 # Use TARGET=<target_name> to optimize for a specifc target OS among the
 # following list (use the default "generic" if uncertain) :
 #    generic, linux22, linux24, linux24e, linux26, solaris,
-#    freebsd, openbsd, cygwin, custom, aix52
+#    freebsd, openbsd, cygwin, custom, aix51, aix52
 TARGET =
 
 #### TARGET CPU
@@ -156,6 +159,10 @@ ADDLIB =
 DEFINE =
 SILENT_DEFINE =
 
+#### extra programs to build (eg: haproxy-systemd-wrapper)
+# Force this to enable building extra programs or to disable them.
+# It's automatically appended depending on the targets.
+EXTRA =
 
 #### CPU dependant optimizations
 # Some CFLAGS are set by default depending on the target CPU. Those flags only
@@ -238,6 +245,7 @@ ifeq ($(TARGET),linux26)
   USE_TPROXY      = implicit
   USE_LIBCRYPT    = implicit
   USE_FUTEX       = implicit
+  EXTRA          += haproxy-systemd-wrapper
 else
 ifeq ($(TARGET),linux2628)
   # This is for standard Linux >= 2.6.28 with netfilter, epoll, tproxy and splice
@@ -253,6 +261,7 @@ ifeq ($(TARGET),linux2628)
   USE_FUTEX       = implicit
   USE_CPU_AFFINITY= implicit
   ASSUME_SPLICE_WORKS= implicit
+  EXTRA          += haproxy-systemd-wrapper
 else
 ifeq ($(TARGET),solaris)
   # This is for Solaris 8
@@ -285,6 +294,13 @@ ifeq ($(TARGET),openbsd)
   USE_KQUEUE     = implicit
   USE_TPROXY     = implicit
 else
+ifeq ($(TARGET),aix51)
+  # This is for AIX 5.1
+  USE_POLL        = implicit
+  USE_LIBCRYPT    = implicit
+  TARGET_CFLAGS   = -Dss_family=__ss_family
+  DEBUG_CFLAGS    =
+else
 ifeq ($(TARGET),aix52)
   # This is for AIX 5.2 and later
   USE_POLL        = implicit
@@ -300,6 +316,7 @@ ifeq ($(TARGET),cygwin)
   TARGET_CFLAGS  = $(if $(filter 1.5.%, $(shell uname -r)), -DUSE_IPV6 -DAF_INET6=23 -DINET6_ADDRSTRLEN=46, )
 endif # cygwin
 endif # aix52
+endif # aix51
 endif # openbsd
 endif # osx
 endif # freebsd
@@ -343,11 +360,11 @@ endif
 # holding the same names in the current directory.
 
 ifeq ($(IGNOREGIT),)
-VERSION := $(shell [ -d .git/. ] && ref=`(git describe --tags --match 'v*') 2>/dev/null` && ref=$${ref%-g*} && echo "$${ref\#v}")
+VERSION := $(shell [ -d .git/. ] && ref=`(git describe --tags --match 'v*' --abbrev=0) 2>/dev/null` && ref=$${ref%-g*} && echo "$${ref\#v}")
 ifneq ($(VERSION),)
 # OK git is there and works.
-SUBVERS := $(shell comms=`git log --no-merges v$(VERSION).. 2>/dev/null |grep -c ^commit `; [ $$comms -gt 0 ] && echo "-$$comms" )
-VERDATE := $(shell date +%Y/%m/%d -d "`git log --pretty=fuller HEAD^.. 2>/dev/null | sed -ne '/^CommitDate:/{s/\(^[^ ]*:\)\|\( [-+].*\)//gp;q}'`" )
+SUBVERS := $(shell comms=`git log --format=oneline --no-merges v$(VERSION).. 2>/dev/null | wc -l | tr -dc '0-9'`; [ $$comms -gt 0 ] && echo "-$$comms")
+VERDATE := $(shell git log -1 --pretty=format:%ci | cut -f1 -d' ' | tr '-' '/')
 endif
 endif
 
@@ -356,10 +373,10 @@ ifeq ($(VERSION),)
 VERSION := $(shell cat VERSION 2>/dev/null || touch VERSION)
 endif
 ifeq ($(SUBVERS),)
-SUBVERS := $(shell cat SUBVERS 2>/dev/null || touch SUBVERS)
+SUBVERS := $(shell (grep -v '\$$Format' SUBVERS 2>/dev/null || touch SUBVERS) | head -n 1)
 endif
 ifeq ($(VERDATE),)
-VERDATE := $(shell cat VERDATE 2>/dev/null || touch VERDATE)
+VERDATE := $(shell (grep -v '^\$$Format' VERDATE 2>/dev/null || touch VERDATE) | head -n 1 | cut -f1 -d' ' | tr '-' '/')
 endif
 
 #### Build options
@@ -528,10 +545,13 @@ OPTIONS_OBJS  += src/ssl_sock.o src/shctx.o
 ifneq ($(USE_PRIVATE_CACHE),)
 OPTIONS_CFLAGS  += -DUSE_PRIVATE_CACHE
 else
+ifneq ($(USE_PTHREAD_PSHARED),)
+OPTIONS_CFLAGS  += -DUSE_PTHREAD_PSHARED
+OPTIONS_LDFLAGS += -lpthread
+else
 ifneq ($(USE_FUTEX),)
 OPTIONS_CFLAGS  += -DUSE_SYSCALL_FUTEX
-else
-OPTIONS_LDFLAGS += -lpthread
+endif
 endif
 endif
 endif
@@ -623,7 +643,7 @@ all:
 	@echo
 	@exit 1
 else
-all: haproxy haproxy-systemd-wrapper
+all: haproxy $(EXTRA)
 endif
 
 OBJS = src/haproxy.o src/sessionhash.o src/base64.o src/protocol.o \
@@ -637,7 +657,7 @@ OBJS = src/haproxy.o src/sessionhash.o src/base64.o src/protocol.o \
        src/stream_interface.o src/dumpstats.o src/proto_tcp.o \
        src/session.o src/hdr_idx.o src/ev_select.o src/signal.o \
        src/acl.o src/sample.o src/memory.o src/freq_ctr.o src/auth.o \
-       src/compression.o src/payload.o src/hash.o
+       src/compression.o src/payload.o src/hash.o src/pattern.o src/map.o
 
 EBTREE_OBJS = $(EBTREE_DIR)/ebtree.o \
               $(EBTREE_DIR)/eb32tree.o $(EBTREE_DIR)/eb64tree.o \
@@ -710,7 +730,7 @@ clean:
 	rm -f *.[oas] src/*.[oas] ebtree/*.[oas] haproxy test
 	for dir in . src include/* doc ebtree; do rm -f $$dir/*~ $$dir/*.rej $$dir/core; done
 	rm -f haproxy-$(VERSION).tar.gz haproxy-$(VERSION)$(SUBVERS).tar.gz
-	rm -f haproxy-$(VERSION) nohup.out gmon.out
+	rm -f haproxy-$(VERSION) haproxy-$(VERSION)$(SUBVERS) nohup.out gmon.out
 	rm -f haproxy-systemd-wrapper
 
 tags:
@@ -721,15 +741,15 @@ cscope:
 	find src include -name "*.[ch]" -print | cscope -q -b -i -
 
 tar:	clean
-	ln -s . haproxy-$(VERSION)
-	tar --exclude=haproxy-$(VERSION)/.git \
-	    --exclude=haproxy-$(VERSION)/haproxy-$(VERSION) \
-	    --exclude=haproxy-$(VERSION)/haproxy-$(VERSION).tar.gz \
-	    -cf - haproxy-$(VERSION)/* | gzip -c9 >haproxy-$(VERSION).tar.gz
-	rm -f haproxy-$(VERSION)
+	ln -s . haproxy-$(VERSION)$(SUBVERS)
+	tar --exclude=haproxy-$(VERSION)$(SUBVERS)/.git \
+	    --exclude=haproxy-$(VERSION)$(SUBVERS)/haproxy-$(VERSION)$(SUBVERS) \
+	    --exclude=haproxy-$(VERSION)$(SUBVERS)/haproxy-$(VERSION)$(SUBVERS).tar.gz \
+	    -cf - haproxy-$(VERSION)$(SUBVERS)/* | gzip -c9 >haproxy-$(VERSION)$(SUBVERS).tar.gz
+	rm -f haproxy-$(VERSION)$(SUBVERS)
 
 git-tar:
-	git archive --format=tar --prefix="haproxy-$(VERSION)/" HEAD | gzip -9 > haproxy-$(VERSION)$(SUBVERS).tar.gz
+	git archive --format=tar --prefix="haproxy-$(VERSION)$(SUBVERS)/" HEAD | gzip -9 > haproxy-$(VERSION)$(SUBVERS).tar.gz
 
 version:
 	@echo "VERSION: $(VERSION)"

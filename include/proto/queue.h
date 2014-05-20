@@ -65,12 +65,17 @@ static inline struct pendconn *pendconn_from_px(const struct proxy *px) {
 	return LIST_ELEM(px->pendconns.n, struct pendconn *, list);
 }
 
+/* Returns 0 if all slots are full on a server, or 1 if there are slots available. */
+static inline int server_has_room(const struct server *s) {
+	return !s->maxconn || s->cur_sess < srv_dynamic_maxconn(s);
+}
+
 /* returns 0 if nothing has to be done for server <s> regarding queued connections,
  * and non-zero otherwise. If the server is down, we only check its own queue. Suited
  * for and if/else usage.
  */
 static inline int may_dequeue_tasks(const struct server *s, const struct proxy *p) {
-	return (s && (s->nbpend || (p->nbpend && srv_is_usable(s->state, s->eweight))) &&
+	return (s && (s->nbpend || (p->nbpend && srv_is_usable(s))) &&
 		(!s->maxconn || s->cur_sess < srv_dynamic_maxconn(s)));
 }
 

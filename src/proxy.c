@@ -25,6 +25,9 @@
 #include <common/memory.h>
 #include <common/time.h>
 
+#include <eb32tree.h>
+#include <ebistree.h>
+
 #include <types/global.h>
 #include <types/obj_type.h>
 #include <types/peers.h>
@@ -44,6 +47,7 @@
 int listeners;	/* # of proxy listeners, set by cfgparse */
 struct proxy *proxy  = NULL;	/* list of all existing proxies */
 struct eb_root used_proxy_id = EB_ROOT;	/* list of proxy IDs in use */
+struct eb_root proxy_by_name = EB_ROOT; /* tree of proxies sorted by name */
 unsigned int error_snapshot_id = 0;     /* global ID assigned to each error then incremented */
 
 /*
@@ -93,22 +97,15 @@ int get_backend_server(const char *bk_name, const char *sv_name,
 {
 	struct proxy *p;
 	struct server *s;
-	int pid, sid;
+	int sid;
 
 	*sv = NULL;
 
-	pid = -1;
-	if (*bk_name == '#')
-		pid = atoi(bk_name + 1);
 	sid = -1;
 	if (*sv_name == '#')
 		sid = atoi(sv_name + 1);
 
-	for (p = proxy; p; p = p->next)
-		if ((p->cap & PR_CAP_BE) &&
-		    ((pid >= 0 && p->uuid == pid) ||
-		     (pid < 0 && strcmp(p->id, bk_name) == 0)))
-			break;
+	p = findproxy(bk_name, PR_CAP_BE);
 	if (bk)
 		*bk = p;
 	if (!p)
@@ -142,6 +139,7 @@ static int proxy_parse_timeout(char **args, int section, struct proxy *proxy,
 	const char *res, *name;
 	int *tv = NULL;
 	int *td = NULL;
+	int warn = 0;
 
 	retval = 0;
 
@@ -150,7 +148,7 @@ static int proxy_parse_timeout(char **args, int section, struct proxy *proxy,
 		args++;
 
 	name = args[0];
-	if (!strcmp(args[0], "client") || !strcmp(args[0], "clitimeout")) {
+	if (!strcmp(args[0], "client") || (!strcmp(args[0], "clitimeout") && (warn = WARN_CLITO_DEPRECATED))) {
 		name = "client";
 		tv = &proxy->timeout.client;
 		td = &defpx->timeout.client;
@@ -167,12 +165,12 @@ static int proxy_parse_timeout(char **args, int section, struct proxy *proxy,
 		tv = &proxy->timeout.httpreq;
 		td = &defpx->timeout.httpreq;
 		cap = PR_CAP_FE | PR_CAP_BE;
-	} else if (!strcmp(args[0], "server") || !strcmp(args[0], "srvtimeout")) {
+	} else if (!strcmp(args[0], "server") || (!strcmp(args[0], "srvtimeout") && (warn = WARN_SRVTO_DEPRECATED))) {
 		name = "server";
 		tv = &proxy->timeout.server;
 		td = &defpx->timeout.server;
 		cap = PR_CAP_BE;
-	} else if (!strcmp(args[0], "connect") || !strcmp(args[0], "contimeout")) {
+	} else if (!strcmp(args[0], "connect") || (!strcmp(args[0], "contimeout") && (warn = WARN_CONTO_DEPRECATED))) {
 		name = "connect";
 		tv = &proxy->timeout.connect;
 		td = &defpx->timeout.connect;
@@ -189,10 +187,19 @@ static int proxy_parse_timeout(char **args, int section, struct proxy *proxy,
 		tv = &proxy->timeout.tunnel;
 		td = &defpx->timeout.tunnel;
 		cap = PR_CAP_BE;
+	} else if (!strcmp(args[0], "client-fin")) {
+		tv = &proxy->timeout.clientfin;
+		td = &defpx->timeout.clientfin;
+		cap = PR_CAP_FE;
+	} else if (!strcmp(args[0], "server-fin")) {
+		tv = &proxy->timeout.serverfin;
+		td = &defpx->timeout.serverfin;
+		cap = PR_CAP_BE;
 	} else {
 		memprintf(err,
 		          "'timeout' supports 'client', 'server', 'connect', 'check', "
-		          "'queue', 'http-keep-alive', 'http-request', 'tunnel' or 'tarpit', (got '%s')",
+		          "'queue', 'http-keep-alive', 'http-request', 'tunnel', 'tarpit', "
+			  "'client-fin' and 'server-fin' (got '%s')",
 		          args[0]);
 		return -1;
 	}
@@ -217,6 +224,13 @@ static int proxy_parse_timeout(char **args, int section, struct proxy *proxy,
 	else if (defpx && *tv != *td) {
 		memprintf(err, "overwriting 'timeout %s' which was already specified", name);
 		retval = 1;
+	}
+	else if (warn) {
+		if (!already_warned(warn)) {
+			memprintf(err, "the '%s' directive is now deprecated in favor of 'timeout %s', and will not be supported in future versions.",
+				  args[0], name);
+			retval = 1;
+		}
 	}
 
 	*tv = MS_TO_TICKS(timeout);
@@ -278,6 +292,54 @@ static int proxy_parse_rate_limit(char **args, int section, struct proxy *proxy,
 	return retval;
 }
 
+/* This function parses a "max-keep-alive-queue" statement in a proxy section.
+ * It returns -1 if there is any error, 1 for a warning, otherwise zero. If it
+ * does not return zero, it will write an error or warning message into a
+ * preallocated buffer returned at <err>. The function must be called with
+ * <args> pointing to the first command line word, with <proxy> pointing to
+ * the proxy being parsed, and <defpx> to the default proxy or NULL.
+ */
+static int proxy_parse_max_ka_queue(char **args, int section, struct proxy *proxy,
+                                    struct proxy *defpx, const char *file, int line,
+                                    char **err)
+{
+	int retval;
+	char *res;
+	unsigned int val;
+
+	retval = 0;
+
+	if (*args[1] == 0) {
+		memprintf(err, "'%s' expects expects an integer value (or -1 to disable)", args[0]);
+		return -1;
+	}
+
+	val = strtol(args[1], &res, 0);
+	if (*res) {
+		memprintf(err, "'%s' : unexpected character '%c' in integer value '%s'", args[0], *res, args[1]);
+		return -1;
+	}
+
+	if (!(proxy->cap & PR_CAP_BE)) {
+		memprintf(err, "%s will be ignored because %s '%s' has no backend capability",
+		          args[0], proxy_type_str(proxy), proxy->id);
+		retval = 1;
+	}
+
+	/* we store <val+1> so that a user-facing value of -1 is stored as zero (default) */
+	proxy->max_ka_queue = val + 1;
+	return retval;
+}
+
+/* This function inserts proxy <px> into the tree of known proxies. The proxy's
+ * name is used as the storing key so it must already have been initialized.
+ */
+void proxy_store_name(struct proxy *px)
+{
+	px->conf.by_name.key = px->id;
+	ebis_insert(&proxy_by_name, &px->conf.by_name);
+}
+
 /*
  * This function finds a proxy with matching name, mode and with satisfying
  * capabilities. It also checks if there are more matching proxies with
@@ -287,9 +349,15 @@ static int proxy_parse_rate_limit(char **args, int section, struct proxy *proxy,
 struct proxy *findproxy_mode(const char *name, int mode, int cap) {
 
 	struct proxy *curproxy, *target = NULL;
+	struct ebpt_node *node;
 
-	for (curproxy = proxy; curproxy; curproxy = curproxy->next) {
-		if ((curproxy->cap & cap)!=cap || strcmp(curproxy->id, name))
+	for (node = ebis_lookup(&proxy_by_name, name); node; node = ebpt_next(node)) {
+		curproxy = container_of(node, struct proxy, conf.by_name);
+
+		if (strcmp(curproxy->id, name) != 0)
+			break;
+
+		if ((curproxy->cap & cap) != cap)
 			continue;
 
 		if (curproxy->mode != mode &&
@@ -323,23 +391,44 @@ struct proxy *findproxy(const char *name, int cap) {
 	struct proxy *curproxy, *target = NULL;
 	int pid = -1;
 
-	if (*name == '#')
+	if (*name == '#') {
+		struct eb32_node *node;
+
 		pid = atoi(name + 1);
 
-	for (curproxy = proxy; curproxy; curproxy = curproxy->next) {
-		if ((curproxy->cap & cap) != cap ||
-		    (pid >= 0 && curproxy->uuid != pid) ||
-		    (pid < 0 && strcmp(curproxy->id, name)))
-			continue;
+		for (node = eb32_lookup(&used_proxy_id, pid); node; node = eb32_next(node)) {
+			curproxy = container_of(node, struct proxy, conf.id);
 
-		if (!target) {
+			if (curproxy->uuid != pid)
+				break;
+
+			if ((curproxy->cap & cap) != cap)
+				continue;
+
+			if (target)
+				return NULL;
+
 			target = curproxy;
-			continue;
 		}
-
-		return NULL;
 	}
+	else {
+		struct ebpt_node *node;
 
+		for (node = ebis_lookup(&proxy_by_name, name); node; node = ebpt_next(node)) {
+			curproxy = container_of(node, struct proxy, conf.by_name);
+
+			if (strcmp(curproxy->id, name) != 0)
+				break;
+
+			if ((curproxy->cap & cap) != cap)
+				continue;
+
+			if (target)
+				return NULL;
+
+			target = curproxy;
+		}
+	}
 	return target;
 }
 
@@ -406,7 +495,7 @@ int proxy_cfg_ensure_no_http(struct proxy *curproxy)
 	}
 	if (curproxy->to_log & (LW_REQ | LW_RESP)) {
 		curproxy->to_log &= ~(LW_REQ | LW_RESP);
-		Warning("parsing [%s:%d] : 'option httplog' not usable with %s '%s' (needs 'mode http'). Falling back to 'option tcplog'.\n",
+		Warning("parsing [%s:%d] : HTTP log/header format not usable with %s '%s' (needs 'mode http').\n",
 			curproxy->conf.lfs_file, curproxy->conf.lfs_line,
 			proxy_type_str(curproxy), curproxy->id);
 	}
@@ -434,7 +523,7 @@ void init_new_proxy(struct proxy *p)
 	LIST_INIT(&p->acl);
 	LIST_INIT(&p->http_req_rules);
 	LIST_INIT(&p->http_res_rules);
-	LIST_INIT(&p->block_cond);
+	LIST_INIT(&p->block_rules);
 	LIST_INIT(&p->redirect_rules);
 	LIST_INIT(&p->mon_fail_cond);
 	LIST_INIT(&p->switching_rules);
@@ -454,6 +543,7 @@ void init_new_proxy(struct proxy *p)
 	LIST_INIT(&p->conf.bind);
 	LIST_INIT(&p->conf.listeners);
 	LIST_INIT(&p->conf.args.list);
+	LIST_INIT(&p->tcpcheck_rules);
 
 	/* Timeouts are defined as -1 */
 	proxy_reset_timeouts(p);
@@ -852,15 +942,22 @@ int session_set_backend(struct session *s, struct proxy *be)
 	 * a struct hdr_idx for it if we did not have one.
 	 */
 	if (unlikely(!s->txn.hdr_idx.v && be->http_needed)) {
+		s->txn.hdr_idx.size = global.tune.max_http_hdr;
 		if ((s->txn.hdr_idx.v = pool_alloc2(pool2_hdr_idx)) == NULL)
 			return 0; /* not enough memory */
 
 		/* and now initialize the HTTP transaction state */
 		http_init_txn(s);
-
-		s->txn.hdr_idx.size = global.tune.max_http_hdr;
-		hdr_idx_init(&s->txn.hdr_idx);
 	}
+
+	/* If an LB algorithm needs to access some pre-parsed body contents,
+	 * we must not start to forward anything until the connection is
+	 * confirmed otherwise we'll lose the pointer to these data and
+	 * prevent the hash from being doable again after a redispatch.
+	 */
+	if (be->mode == PR_MODE_HTTP &&
+	    (be->lbprm.algo & (BE_LB_KIND | BE_LB_PARM)) == (BE_LB_KIND_HI | BE_LB_HASH_PRM))
+		s->txn.req.flags |= HTTP_MSGF_WAIT_CONN;
 
 	if (be->options2 & PR_O2_NODELAY) {
 		s->req->flags |= CF_NEVER_WAIT;
@@ -883,6 +980,7 @@ static struct cfg_kw_list cfg_kws = {ILH, {
 	{ CFG_LISTEN, "contimeout", proxy_parse_timeout },
 	{ CFG_LISTEN, "srvtimeout", proxy_parse_timeout },
 	{ CFG_LISTEN, "rate-limit", proxy_parse_rate_limit },
+	{ CFG_LISTEN, "max-keep-alive-queue", proxy_parse_max_ka_queue },
 	{ 0, NULL, NULL },
 }};
 
