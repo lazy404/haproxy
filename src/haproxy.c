@@ -1,6 +1,6 @@
 /*
  * HA-Proxy : High Availability-enabled HTTP/TCP proxy
- * Copyright 2000-2013  Willy Tarreau <w@1wt.eu>.
+ * Copyright 2000-2014  Willy Tarreau <w@1wt.eu>.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -89,6 +89,7 @@
 #include <proto/hdr_idx.h>
 #include <proto/listener.h>
 #include <proto/log.h>
+#include <proto/pattern.h>
 #include <proto/protocol.h>
 #include <proto/proto_http.h>
 #include <proto/proxy.h>
@@ -128,6 +129,7 @@ struct global global = {
 	.maxzlibmem = 0,
 #endif
 	.comp_rate_lim = 0,
+	.ssl_server_verify = SSL_SERVER_VERIFY_REQUIRED,
 	.unix_bind = {
 		 .ux = {
 			 .uid = -1,
@@ -141,24 +143,24 @@ struct global global = {
 		.chksize = BUFSIZE,
 #ifdef USE_OPENSSL
 		.sslcachesize = SSLCACHESIZE,
+#ifdef DEFAULT_SSL_MAX_RECORD
+		.ssl_max_record = DEFAULT_SSL_MAX_RECORD,
+#endif
 #endif
 #ifdef USE_ZLIB
 		.zlibmemlevel = 8,
 		.zlibwindowsize = MAX_WBITS,
 #endif
 		.comp_maxlevel = 1,
-
-
+#ifdef DEFAULT_IDLE_TIMER
+		.idle_timer = DEFAULT_IDLE_TIMER,
+#else
+		.idle_timer = 1000, /* 1 second */
+#endif
 	},
 #ifdef USE_OPENSSL
 #ifdef DEFAULT_MAXSSLCONN
 	.maxsslconn = DEFAULT_MAXSSLCONN,
-#endif
-#ifdef LISTEN_DEFAULT_CIPHERS
-	.listen_default_ciphers = LISTEN_DEFAULT_CIPHERS,
-#endif
-#ifdef CONNECT_DEFAULT_CIPHERS
-	.connect_default_ciphers = CONNECT_DEFAULT_CIPHERS,
 #endif
 #endif
 	/* others NULL OK */
@@ -193,10 +195,18 @@ const struct linger nolinger = { .l_onoff = 1, .l_linger = 0 };
 char hostname[MAX_HOSTNAME_LEN];
 char localpeer[MAX_HOSTNAME_LEN];
 
+/* used from everywhere just to drain results we don't want to read and which
+ * recent versions of gcc increasingly and annoyingly complain about.
+ */
+int shut_your_big_mouth_gcc_int = 0;
+
 /* list of the temporarily limited listeners because of lack of resource */
 struct list global_listener_queue = LIST_HEAD_INIT(global_listener_queue);
 struct task *global_listener_queue_task;
 static struct task *manage_global_listener_queue(struct task *t);
+
+/* bitfield of a few warnings to emit just once (WARN_*) */
+unsigned int warned = 0;
 
 /*********************************************************************/
 /*  general purpose functions  ***************************************/
@@ -205,7 +215,7 @@ static struct task *manage_global_listener_queue(struct task *t);
 void display_version()
 {
 	printf("HA-Proxy version " HAPROXY_VERSION " " HAPROXY_DATE"\n");
-	printf("Copyright 2000-2013 Willy Tarreau <w@1wt.eu>\n\n");
+	printf("Copyright 2000-2014 Willy Tarreau <w@1wt.eu>\n\n");
 }
 
 void display_build_opts()
@@ -378,6 +388,10 @@ void usage(char *name)
 #if defined(CONFIG_HAP_LINUX_SPLICE)
 		"        -dS disables splice usage (broken on old kernels)\n"
 #endif
+#if defined(USE_GETADDRINFO)
+		"        -dG disables getaddrinfo() usage\n"
+#endif
+		"        -dV disables SSL verify on servers side\n"
 		"        -sf/-st [pid ]* finishes/terminates old pids. Must be last arguments.\n"
 		"\n",
 		name, DEFAULT_MAXCONN, cfg_maxpconn);
@@ -491,6 +505,7 @@ void init(int argc, char **argv)
 	struct tm curtime;
 
 	chunk_init(&trash, malloc(global.tune.bufsize), global.tune.bufsize);
+	alloc_trash_buffers(global.tune.bufsize);
 
 	/* NB: POSIX does not make it mandatory for gethostname() to NULL-terminate
 	 * the string in case of truncation, and at least FreeBSD appears not to do
@@ -514,6 +529,8 @@ void init(int argc, char **argv)
 
 	tv_update_date(-1,-1);
 	start_date = now;
+
+	srandom(now_ms - getpid());
 
 	/* Get the numeric timezone. */
 	get_localtime(start_date.tv_sec, &curtime);
@@ -541,6 +558,9 @@ void init(int argc, char **argv)
 #endif
 #if defined(CONFIG_HAP_LINUX_SPLICE)
 	global.tune.options |= GTUNE_USE_SPLICE;
+#endif
+#if defined(USE_GETADDRINFO)
+	global.tune.options |= GTUNE_USE_GAI;
 #endif
 
 	pid = getpid();
@@ -581,6 +601,12 @@ void init(int argc, char **argv)
 			else if (*flag == 'd' && flag[1] == 'S')
 				global.tune.options &= ~GTUNE_USE_SPLICE;
 #endif
+#if defined(USE_GETADDRINFO)
+			else if (*flag == 'd' && flag[1] == 'G')
+				global.tune.options &= ~GTUNE_USE_GAI;
+#endif
+			else if (*flag == 'd' && flag[1] == 'V')
+				global.ssl_server_verify = SSL_SERVER_VERIFY_NONE;
 			else if (*flag == 'V')
 				arg_mode |= MODE_VERBOSE;
 			else if (*flag == 'd' && flag[1] == 'b')
@@ -680,6 +706,8 @@ void init(int argc, char **argv)
 		if (err_code & ERR_ABORT)
 			exit(1);
 	}
+
+	pattern_finalize_config();
 
 	err_code |= check_config_validity();
 	if (err_code & (ERR_ABORT|ERR_FATAL)) {
@@ -817,7 +845,6 @@ void init(int argc, char **argv)
 	swap_buffer = (char *)calloc(1, global.tune.bufsize);
 	get_http_auth_buff = (char *)calloc(1, global.tune.bufsize);
 	static_table_key = calloc(1, sizeof(*static_table_key) + global.tune.bufsize);
-	alloc_trash_buffers(global.tune.bufsize);
 
 	fdinfo = (struct fdinfo *)calloc(1,
 				       sizeof(struct fdinfo) * (global.maxsock));
@@ -992,7 +1019,7 @@ void deinit(void)
 			free(cwl);
 		}
 
-		list_for_each_entry_safe(cond, condb, &p->block_cond, list) {
+		list_for_each_entry_safe(cond, condb, &p->block_rules, list) {
 			LIST_DEL(&cond->list);
 			prune_acl_cond(cond);
 			free(cond);
@@ -1061,8 +1088,10 @@ void deinit(void)
 
 		list_for_each_entry_safe(rule, ruleb, &p->switching_rules, list) {
 			LIST_DEL(&rule->list);
-			prune_acl_cond(rule->cond);
-			free(rule->cond);
+			if (rule->cond) {
+				prune_acl_cond(rule->cond);
+				free(rule->cond);
+			}
 			free(rule);
 		}
 
@@ -1073,6 +1102,10 @@ void deinit(void)
 				free(rdr->cond);
 			}
 			free(rdr->rdr_str);
+			list_for_each_entry_safe(lf, lfb, &rdr->rdr_fmt, list) {
+				LIST_DEL(&lf->list);
+				free(lf);
+			}
 			free(rdr);
 		}
 
@@ -1120,6 +1153,10 @@ void deinit(void)
 				task_delete(s->check.task);
 				task_free(s->check.task);
 			}
+			if (s->agent.task) {
+				task_delete(s->agent.task);
+				task_free(s->agent.task);
+			}
 
 			if (s->warmup) {
 				task_delete(s->warmup);
@@ -1130,6 +1167,8 @@ void deinit(void)
 			free(s->cookie);
 			free(s->check.bi);
 			free(s->check.bo);
+			free(s->agent.bi);
+			free(s->agent.bo);
 			free(s);
 			s = s_next;
 		}/* end while(s) */
@@ -1268,7 +1307,7 @@ void run_poll_loop()
 
 		/* The poller will ensure it returns around <next> */
 		cur_poller.poll(&cur_poller, next);
-		fd_process_spec_events();
+		fd_process_cached_events();
 	}
 }
 
@@ -1531,7 +1570,7 @@ int main(int argc, char **argv)
 			if (pidfd >= 0) {
 				char pidstr[100];
 				snprintf(pidstr, sizeof(pidstr), "%d\n", ret);
-				if (write(pidfd, pidstr, strlen(pidstr)) < 0) /* shut gcc warning */;
+				shut_your_big_mouth_gcc(write(pidfd, pidstr, strlen(pidstr)));
 			}
 			relative_pid++; /* each child will get a different one */
 		}
@@ -1557,7 +1596,7 @@ int main(int argc, char **argv)
 		px = proxy;
 		while (px != NULL) {
 			if (px->bind_proc && px->state != PR_STSTOPPED) {
-				if (!(px->bind_proc & (1 << proc)))
+				if (!(px->bind_proc & (1UL << proc)))
 					stop_proxy(px);
 			}
 			px = px->next;
@@ -1571,6 +1610,8 @@ int main(int argc, char **argv)
 			exit(0); /* parent must leave */
 		}
 
+		free(children);
+		children = NULL;
 		/* if we're NOT in QUIET mode, we should now close the 3 first FDs to ensure
 		 * that we can detach from the TTY. We MUST NOT do it in other cases since
 		 * it would have already be done, and 0-2 would have been affected to listening

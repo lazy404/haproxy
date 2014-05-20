@@ -42,7 +42,7 @@ struct proxy;
 struct licounters;
 
 /* listener state */
-enum {
+enum li_state {
 	LI_NEW	= 0,    /* not initialized yet */
 	LI_INIT,        /* all parameters filled in, but not assigned yet */
 	LI_ASSIGNED,    /* assigned to the protocol, but not listening yet */
@@ -51,7 +51,7 @@ enum {
 	LI_READY,       /* started, listening and enabled */
 	LI_FULL,        /* reached its connection limit */
 	LI_LIMITED,     /* transient state: limits have been reached, listener is queued */
-};
+} __attribute__((packed));
 
 /* Listener transitions
  * calloc()     set()      add_listener()       bind()
@@ -134,6 +134,7 @@ struct bind_conf {
 	struct eb_root sni_w_ctx;  /* sni_ctx tree of all known certs wildcards sorted by name */
 #endif
 	int is_ssl;                /* SSL is required for these listeners */
+	unsigned long bind_proc;   /* bitmask of processes allowed to use these listeners */
 	struct {                   /* UNIX socket permissions */
 		uid_t uid;         /* -1 to leave unchanged */
 		gid_t gid;         /* -1 to leave unchanged */
@@ -153,10 +154,11 @@ struct bind_conf {
  */
 struct listener {
 	enum obj_type obj_type;         /* object type = OBJ_TYPE_LISTENER */
+	enum li_state state;            /* state: NEW, INIT, ASSIGNED, LISTEN, READY, FULL */
+	short int nice;                 /* nice value to assign to the instanciated tasks */
 	int fd;				/* the listen socket */
-	char *name;			/* */
+	char *name;			/* listener's name */
 	int luid;			/* listener universally unique ID, used for SNMP */
-	int state;			/* state: NEW, INIT, ASSIGNED, LISTEN, READY, FULL */
 	int options;			/* socket options : LI_O_* */
 	struct licounters *counters;	/* statistics counters */
 	struct protocol *proto;		/* protocol this listener belongs to */
@@ -172,9 +174,8 @@ struct listener {
 	struct proxy *frontend;		/* the frontend this listener belongs to, or NULL */
 	struct list wait_queue;		/* link element to make the listener wait for something (LI_LIMITED)  */
 	unsigned int analysers;		/* bitmap of required protocol analysers */
-	int nice;			/* nice value to assign to the instanciated tasks */
-	char *interface;		/* interface name or NULL */
 	int maxseg;			/* for TCP, advertised MSS */
+	char *interface;		/* interface name or NULL */
 
 	struct list by_fe;              /* chaining in frontend's list of listeners */
 	struct list by_bind;            /* chaining in bind_conf's list of listeners */

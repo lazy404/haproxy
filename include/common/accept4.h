@@ -41,7 +41,7 @@
 #define SOCK_NONBLOCK O_NONBLOCK
 #endif
 
-#if defined(USE_MY_ACCEPT4) || !defined(SYS_ACCEPT4)
+#if defined(USE_MY_ACCEPT4) || (!defined(SYS_ACCEPT4) && !defined(__NR_accept4))
 #if defined(CONFIG_HAP_LINUX_VSYSCALL) && defined(__linux__) && defined(__i386__)
 /* The syscall is redefined somewhere else */
 extern int accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags);
@@ -58,7 +58,7 @@ static int accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int fl
 	return socketcall(SYS_ACCEPT4, args);
 }
 #else
-static _syscall4(int, accept4, int, sockfd, struct sockaddr *, addr, socklen_t *, addrlen, int, flags);
+static inline _syscall4(int, accept4, int, sockfd, struct sockaddr *, addr, socklen_t *, addrlen, int, flags);
 #endif /* VSYSCALL etc... */
 #endif /* USE_MY_ACCEPT4 */
 #endif /* __linux__ && USE_ACCEPT4 */

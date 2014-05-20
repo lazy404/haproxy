@@ -25,15 +25,19 @@
 #include <unistd.h>
 
 #include <common/config.h>
+#include <common/time.h>
 #include <types/proxy.h>
 #include <types/queue.h>
 #include <types/server.h>
 
 #include <proto/queue.h>
+#include <proto/log.h>
 #include <proto/freq_ctr.h>
 
-int srv_downtime(struct server *s);
-int srv_getinter(struct server *s);
+int srv_downtime(const struct server *s);
+int srv_lastsession(const struct server *s);
+int srv_getinter(const struct check *check);
+int parse_server(const char *file, int linenum, char **args, struct proxy *curproxy, struct proxy *defproxy);
 
 /* increase the number of cumulated connections on the designated server */
 static void inline srv_inc_sess_ctr(struct server *s)
@@ -42,6 +46,12 @@ static void inline srv_inc_sess_ctr(struct server *s)
 	update_freq_ctr(&s->sess_per_sec, 1);
 	if (s->sess_per_sec.curr_ctr > s->counters.sps_max)
 		s->counters.sps_max = s->sess_per_sec.curr_ctr;
+}
+
+/* set the time of last session on the designated server */
+static void inline srv_set_sess_last(struct server *s)
+{
+	s->counters.last_sess = now.tv_sec;
 }
 
 #endif /* _PROTO_SERVER_H */
@@ -58,6 +68,26 @@ struct srv_kw *srv_find_kw(const char *kw);
 /* Dumps all registered "server" keywords to the <out> string pointer. */
 void srv_dump_kws(char **out);
 
+/* Recomputes the server's eweight based on its state, uweight, the current time,
+ * and the proxy's algorihtm. To be used after updating sv->uweight. The warmup
+ * state is automatically disabled if the time is elapsed.
+ */
+void server_recalc_eweight(struct server *sv);
+
+/* returns the current server throttle rate between 0 and 100% */
+static inline unsigned int server_throttle_rate(struct server *sv)
+{
+	struct proxy *px = sv->proxy;
+
+	/* when uweight is 0, we're in soft-stop so that cannot be a slowstart,
+	 * thus the throttle is 100%.
+	 */
+	if (!sv->uweight)
+		return 100;
+
+	return (100U * px->lbprm.wmult * sv->eweight + px->lbprm.wdiv - 1) / (px->lbprm.wdiv * sv->uweight);
+}
+
 /*
  * Parses weight_str and configures sv accordingly.
  * Returns NULL on success, error message string otherwise.
@@ -65,6 +95,14 @@ void srv_dump_kws(char **out);
 const char *server_parse_weight_change_request(struct server *sv,
 					       const char *weight_str);
 
+/*
+ * Return true if the server has a zero user-weight, meaning it's in draining
+ * mode (ie: not taking new non-persistent connections).
+ */
+static inline int server_is_draining(const struct server *s)
+{
+	return !s->uweight;
+}
 /*
  * Local variables:
  *  c-indent-level: 8

@@ -1,10 +1,10 @@
                          ----------------------
-                                 HAProxy
+                                HAProxy
                           Configuration Manual
                          ----------------------
-                             version 1.5
+                              version 1.5
                              willy tarreau
-                              2013/06/17
+                              2014/05/10
 
 
 This document covers the configuration language as implemented in the version
@@ -69,11 +69,12 @@ Summary
 7.1.6.      Matching IPv4 and IPv6 addresses
 7.2.      Using ACLs to form conditions
 7.3.      Fetching samples
-7.3.1.        Fetching samples from internal states
-7.3.2.        Fetching samples at Layer 4
-7.3.3.        Fetching samples at Layer 5
-7.3.4.        Fetching samples from buffer contents (Layer 6)
-7.3.5.        Fetching HTTP samples (Layer 7)
+7.3.1.        Converters
+7.3.2.        Fetching samples from internal states
+7.3.3.        Fetching samples at Layer 4
+7.3.4.        Fetching samples at Layer 5
+7.3.5.        Fetching samples from buffer contents (Layer 6)
+7.3.6.        Fetching HTTP samples (Layer 7)
 7.4.      Pre-defined ACLs
 
 8.    Logging
@@ -155,16 +156,18 @@ correctly support pipelining since there is no way to associate a response with
 the corresponding request in HTTP. For this reason, it is mandatory for the
 server to reply in the exact same order as the requests were received.
 
-By default HAProxy operates in a tunnel-like mode with regards to persistent
-connections: for each connection it processes the first request and forwards
-everything else (including additional requests) to selected server. Once
-established, the connection is persisted both on the client and server
-sides. Use "option http-server-close" to preserve client persistent connections
-while handling every incoming request individually, dispatching them one after
-another to servers, in HTTP close mode. Use "option httpclose" to switch both
-sides to HTTP close mode. "option forceclose" and "option
-http-pretend-keepalive" help working around servers misbehaving in HTTP close
-mode.
+By default HAProxy operates in keep-alive mode with regards to persistent
+connections: for each connection it processes each request and response, and
+leaves the connection idle on both sides between the end of a response and the
+start of a new request.
+
+HAProxy supports 5 connection modes :
+  - keep alive    : all requests and responses are processed (default)
+  - tunnel        : only the first request and response are processed,
+                    everything else is forwarded with no analysis.
+  - passive close : tunnel with "Connection: close" added in both directions.
+  - server close  : the server-facing connection is closed after the response.
+  - forced close  : the connection is actively closed after end of response.
 
 
 1.2. HTTP request
@@ -455,27 +458,33 @@ The following keywords are supported in the "global" section :
    - ulimit-n
    - user
    - stats
+   - ssl-server-verify
    - node
    - description
    - unix-bind
 
  * Performance tuning
+   - max-spread-checks
    - maxconn
    - maxconnrate
    - maxcomprate
    - maxcompcpuusage
    - maxpipes
+   - maxsessrate
    - maxsslconn
+   - maxsslrate
    - noepoll
    - nokqueue
    - nopoll
    - nosplice
+   - nogetaddrinfo
    - spread-checks
    - tune.bufsize
    - tune.chksize
    - tune.comp.maxlevel
    - tune.http.cookielen
    - tune.http.maxhdr
+   - tune.idletimer
    - tune.maxaccept
    - tune.maxpollevents
    - tune.maxrewrite
@@ -486,6 +495,7 @@ The following keywords are supported in the "global" section :
    - tune.sndbuf.server
    - tune.ssl.cachesize
    - tune.ssl.lifetime
+   - tune.ssl.force-private-cache
    - tune.ssl.maxrecord
    - tune.zlib.memlevel
    - tune.zlib.windowsize
@@ -515,16 +525,16 @@ cpu-map <"all"|"odd"|"even"|process_num> <cpu-set>...
   On Linux 2.6 and above, it is possible to bind a process to a specific CPU
   set. This means that the process will never run on other CPUs. The "cpu-map"
   directive specifies CPU sets for process sets. The first argument is the
-  process number to bind. This process must have a number between 1 and 32,
-  and any process IDs above nbproc are ignored. It is possible to specify all
-  processes at once using "all", only odd numbers using "odd" or even numbers
-  using "even", just like with the "bind-process" directive. The second and
-  forthcoming arguments are CPU sets. Each CPU set is either a unique number
-  between 0 and 31 or a range with two such numbers delimited by a dash ('-').
-  Multiple CPU numbers or ranges may be specified, and the processes will be
-  allowed to bind to all of them. Obviously, multiple "cpu-map" directives may
-  be specified. Each "cpu-map" directive will replace the previous ones when
-  they overlap.
+  process number to bind. This process must have a number between 1 and 32 or
+  64, depending on the machine's word size, and any process IDs above nbproc
+  are ignored. It is possible to specify all processes at once using "all",
+  only odd numbers using "odd" or even numbers using "even", just like with the
+  "bind-process" directive. The second and forthcoming arguments are CPU sets.
+  Each CPU set is either a unique number between 0 and 31 or 63 or a range with
+  two such numbers delimited by a dash ('-'). Multiple CPU numbers or ranges
+  may be specified, and the processes will be allowed to bind to all of them.
+  Obviously, multiple "cpu-map" directives may be specified. Each "cpu-map"
+  directive will replace the previous ones when they overlap.
 
 crt-base <dir>
   Assigns a default directory to fetch SSL certificates from when a relative
@@ -614,14 +624,38 @@ pidfile <pidfile>
   the "-p" command line argument. The file must be accessible to the user
   starting the process. See also "daemon".
 
-stats bind-process [ all | odd | even | <number 1-32>[-<number 1-32>] ] ...
+stats bind-process [ all | odd | even | <number 1-64>[-<number 1-64>] ] ...
   Limits the stats socket to a certain set of processes numbers. By default the
   stats socket is bound to all processes, causing a warning to be emitted when
   nbproc is greater than 1 because there is no way to select the target process
   when connecting. However, by using this setting, it becomes possible to pin
   the stats socket to a specific set of processes, typically the first one. The
   warning will automatically be disabled when this setting is used, whatever
-  the number of processes used.
+  the number of processes used. The maximum process ID depends on the machine's
+  word size (32 or 64). A better option consists in using the "process" setting
+  of the "stats socket" line to force the process on each line.
+
+ssl-default-bind-ciphers <ciphers>
+  This setting is only available when support for OpenSSL was built in. It sets
+  the default string describing the list of cipher algorithms ("cipher suite")
+  that are negotiated during the SSL/TLS handshake for all "bind" lines which
+  do not explicitly define theirs. The format of the string is defined in
+  "man 1 ciphers" from OpenSSL man pages, and can be for instance a string such
+  as "AES:ALL:!aNULL:!eNULL:+RC4:@STRENGTH" (without quotes). Please check the
+  "bind" keyword for more information.
+
+ssl-default-server-ciphers <ciphers>
+  This setting is only available when support for OpenSSL was built in. It
+  sets the default string describing the list of cipher algorithms that are
+  negotiated during the SSL/TLS handshake with the server, for all "server"
+  lines which do not explicitly define theirs. The format of the string is
+  defined in "man 1 ciphers". Please check the "server" keyword for more
+  information.
+
+ssl-server-verify [none|required]
+  The default behavior for SSL verify on servers side. If specified to 'none',
+  servers certificates are not verified. The default is 'required' except if
+  forced using cmdline option '-dV'.
 
 stats socket [<address:port>|<path>] [param*]
   Binds a UNIX socket to <path> or a TCPv4/v6 address to <address:port>.
@@ -690,6 +724,16 @@ description <text>
 3.2. Performance tuning
 -----------------------
 
+max-spread-checks <delay in milliseconds>
+  By default, haproxy tries to spread the start of health checks across the
+  smallest health check interval of all the servers in a farm. The principle is
+  to avoid hammering services running on the same server. But when using large
+  check intervals (10 seconds or more), the last servers in the farm take some
+  time before starting to be tested, which can be a problem. This parameter is
+  used to enforce an upper bound on delay between the first and the last check,
+  even if the servers' check intervals are larger. When servers run with
+  shorter intervals, their intervals will be respected though.
+
 maxconn <number>
   Sets the maximum per-process number of concurrent connections to <number>. It
   is equivalent to the command-line argument "-n". Proxies will stop accepting
@@ -708,7 +752,7 @@ maxconnrate <number>
 
 maxcomprate <number>
   Sets the maximum per-process input compression rate to <number> kilobytes
-  pers second.  For each session, if the maximum is reached, the compression
+  per second.  For each session, if the maximum is reached, the compression
   level will be decreased during the session. If the maximum is reached at the
   beginning of a session, the session will not compress at all. If the maximum
   is not reached, the compression level will be increased up to
@@ -733,6 +777,16 @@ maxpipes <number>
   The splice code dynamically allocates and releases pipes, and can fall back
   to standard copy, so setting this value too low may only impact performance.
 
+maxsessrate <number>
+  Sets the maximum per-process number of sessions per second to <number>.
+  Proxies will stop accepting connections when this limit is reached. It can be
+  used to limit the global capacity regardless of each frontend capacity. It is
+  important to note that this can only be used as a service protection measure,
+  as there will not necessarily be a fair share between frontends when the
+  limit is reached, so it's a good idea to also limit each frontend to some
+  value close to its expected share. Also, lowering tune.maxaccept can improve
+  fairness.
+
 maxsslconn <number>
   Sets the maximum per-process number of concurrent SSL connections to
   <number>. By default there is no SSL-specific limit, which means that the
@@ -741,6 +795,18 @@ maxsslconn <number>
   (since it unfortunately does not reliably check for such conditions). Note
   that the limit applies both to incoming and outgoing connections, so one
   connection which is deciphered then ciphered accounts for 2 SSL connections.
+
+maxsslrate <number>
+  Sets the maximum per-process number of SSL sessions per second to <number>.
+  SSL listeners will stop accepting connections when this limit is reached. It
+  can be used to limit the global SSL CPU usage regardless of each frontend
+  capacity. It is important to note that this can only be used as a service
+  protection measure, as there will not necessarily be a fair share between
+  frontends when the limit is reached, so it's a good idea to also limit each
+  frontend to some value close to its expected share. It is also important to
+  note that the sessions are accounted before they enter the SSL stack and not
+  after, which also protects the stack against bad handshakes. Also, lowering
+  tune.maxaccept can improve fairness.
 
 maxzlibmem <number>
   Sets the maximum amount of RAM in megabytes per process usable by the zlib.
@@ -776,12 +842,17 @@ nosplice
   case of doubt. See also "option splice-auto", "option splice-request" and
   "option splice-response".
 
+nogetaddrinfo
+  Disables the use of getaddrinfo(3) for name resolving. It is equivalent to
+  the command line argument "-dG". Deprecated gethostbyname(3) will be used.
+
 spread-checks <0..50, in percent>
-  Sometimes it is desirable to avoid sending health checks to servers at exact
-  intervals, for instance when many logical servers are located on the same
-  physical server. With the help of this parameter, it becomes possible to add
-  some randomness in the check interval between 0 and +/- 50%. A value between
-  2 and 5 seems to show good results. The default value remains at 0.
+  Sometimes it is desirable to avoid sending agent and health checks to
+  servers at exact intervals, for instance when many logical servers are
+  located on the same physical server. With the help of this parameter, it
+  becomes possible to add some randomness in the check interval between 0
+  and +/- 50%. A value between 2 and 5 seems to show good results. The
+  default value remains at 0.
 
 tune.bufsize <number>
   Sets the buffer size to this size (in bytes). Lower values allow more
@@ -829,6 +900,17 @@ tune.http.maxhdr <number>
   a buggy application to work by the time it gets fixed. Keep in mind that each
   new header consumes 32bits of memory for each session, so don't push this
   limit too high.
+
+tune.idletimer <timeout>
+  Sets the duration after which haproxy will consider that an empty buffer is
+  probably associated with an idle stream. This is used to optimally adjust
+  some packet sizes while forwarding large and small data alternatively. The
+  decision to use splice() or to send large buffers in SSL is modulated by this
+  parameter. The value is in milliseconds between 0 and 65535. A value of zero
+  means that haproxy will not try to detect idle streams. The default is 1000,
+  which seems to correctly detect end user pauses (eg: read a page before
+  clicking). There should be not reason for changing this value. Please check
+  tune.ssl.maxrecord below.
 
 tune.maxaccept <number>
   Sets the maximum number of consecutive connections a process may accept in a
@@ -896,7 +978,7 @@ tune.ssl.cachesize <number>
   Sets the size of the global SSL session cache, in a number of blocks. A block
   is large enough to contain an encoded session without peer certificate.
   An encoded session with peer certificate is stored in multiple blocks
-  depending on the size of the peer certificate. A block use approximatively
+  depending on the size of the peer certificate. A block uses approximately
   200 bytes of memory. The default value may be forced at build time, otherwise
   defaults to 20000.  When the cache is full, the most idle entries are purged
   and reassigned. Higher values reduce the occurrence of such a purge, hence
@@ -905,9 +987,17 @@ tune.ssl.cachesize <number>
   and are shared between all processes if "nbproc" is greater than 1. Setting
   this value to 0 disables the SSL session cache.
 
+tune.ssl.force-private-cache
+  This boolean disables SSL session cache sharing between all processes. It
+  should normally not be used since it will force many renegotiations due to
+  clients hitting a random process. But it may be required on some operating
+  systems where none of the SSL cache synchronization method may be used. In
+  this case, adding a first layer of hash-based load balancing before the SSL
+  layer might limit the impact of the lack of session sharing.
+
 tune.ssl.lifetime <timeout>
   Sets how long a cached SSL session may remain valid. This time is expressed
-  in seconds and defaults to 300 (5 mn). It is important to understand that it
+  in seconds and defaults to 300 (5 min). It is important to understand that it
   does not guarantee that sessions will last that long, because if the cache is
   full, the longest idle sessions will be purged despite their configured
   lifetime. The real usefulness of this setting is to prevent sessions from
@@ -924,11 +1014,12 @@ tune.ssl.maxrecord <number>
   Ethernet with TCP timestamps enabled, or 1460 when timestamps are disabled),
   keeping in mind that SSL/TLS add some overhead. Typical values of 1419 and
   2859 gave good results during tests. Use "strace -e trace=write" to find the
-  best value.
+  best value. Haproxy will automatically switch to this setting after an idle
+  stream has been detected (see tune.idletimer above).
 
 tune.zlib.memlevel <number>
   Sets the memLevel parameter in zlib initialization for each session. It
-  defines how much memory should be allocated for the intenal compression
+  defines how much memory should be allocated for the internal compression
   state. A value of 1 uses minimum memory but is slow and reduces compression
   ratio, a value of 9 uses maximum memory for optimal speed.  Can be a value
   between 1 and 9. The default value is 8.
@@ -975,7 +1066,7 @@ user <username> [password|insecure-password <password>]
   evaluated using the crypt(3) function so depending of the system's
   capabilities, different algorithms are supported. For example modern Glibc
   based Linux system supports MD5, SHA-256, SHA-512 and of course classic,
-  DES-based method of crypting passwords.
+  DES-based method of encrypting passwords.
 
 
   Example:
@@ -1092,6 +1183,50 @@ protocol, and can interact with it by allowing, blocking, switching, adding,
 modifying, or removing arbitrary contents in requests or responses, based on
 arbitrary criteria.
 
+In HTTP mode, the processing applied to requests and responses flowing over
+a connection depends in the combination of the frontend's HTTP options and
+the backend's. HAProxy supports 5 connection modes :
+
+  - KAL : keep alive ("option http-keep-alive") which is the default mode : all
+    requests and responses are processed, and connections remain open but idle
+    between responses and new requests.
+
+  - TUN: tunnel ("option http-tunnel") : this was the default mode for versions
+    1.0 to 1.5-dev21 : only the first request and response are processed, and
+    everything else is forwarded with no analysis at all. This mode should not
+    be used as it creates lots of trouble with logging and HTTP processing.
+
+  - PCL: passive close ("option httpclose") : exactly the same as tunnel mode,
+    but with "Connection: close" appended in both directions to try to make
+    both ends close after the first request/response exchange.
+
+  - SCL: server close ("option http-server-close") : the server-facing
+    connection is closed after the end of the response is received, but the
+    client-facing connection remains open.
+
+  - FCL: forced close ("option forceclose") : the connection is actively closed
+    after the end of the response.
+
+The effective mode that will be applied to a connection passing through a
+frontend and a backend can be determined by both proxy modes according to the
+following matrix, but in short, the modes are symmetric, keep-alive is the
+weakest option and force close is the strongest.
+
+                          Backend mode
+
+                | KAL | TUN | PCL | SCL | FCL
+            ----+-----+-----+-----+-----+----
+            KAL | KAL | TUN | PCL | SCL | FCL
+            ----+-----+-----+-----+-----+----
+            TUN | TUN | TUN | PCL | SCL | FCL
+ Frontend   ----+-----+-----+-----+-----+----
+   mode     PCL | PCL | PCL | PCL | FCL | FCL
+            ----+-----+-----+-----+-----+----
+            SCL | SCL | SCL | FCL | SCL | FCL
+            ----+-----+-----+-----+-----+----
+            FCL | FCL | FCL | FCL | FCL | FCL
+
+
 
 4.1. Proxy keywords matrix
 --------------------------
@@ -1147,6 +1282,7 @@ http-send-name-header                     -          -         X         X
 id                                        -          X         X         X
 ignore-persist                            -          X         X         X
 log                                  (*)  X          X         X         X
+max-keep-alive-queue                      X          -         X         X
 maxconn                                   X          X         X         -
 mode                                      X          X         X         X
 monitor fail                              -          X         X         -
@@ -1164,16 +1300,17 @@ option dontlognull                   (*)  X          X         X         -
 option forceclose                    (*)  X          X         X         X
 -- keyword -------------------------- defaults - frontend - listen -- backend -
 option forwardfor                         X          X         X         X
+option http-keep-alive               (*)  X          X         X         X
 option http-no-delay                 (*)  X          X         X         X
 option http-pretend-keepalive        (*)  X          X         X         X
 option http-server-close             (*)  X          X         X         X
+option http-tunnel                   (*)  X          X         X         X
 option http-use-proxy-header         (*)  X          X         X         -
 option httpchk                            X          -         X         X
 option httpclose                     (*)  X          X         X         X
 option httplog                            X          X         X         X
 option http_proxy                    (*)  X          X         X         X
 option independent-streams           (*)  X          X         X         X
-option lb-agent-chk                       X          -         X         X
 option ldap-check                         X          -         X         X
 option log-health-checks             (*)  X          -         X         X
 option log-separate-errors           (*)  X          X         X         -
@@ -1193,6 +1330,7 @@ option splice-response               (*)  X          X         X         X
 option srvtcpka                      (*)  X          -         X         X
 option ssl-hello-chk                      X          -         X         X
 -- keyword -------------------------- defaults - frontend - listen -- backend -
+option tcp-check                          X          -         X         X
 option tcp-smart-accept              (*)  X          X         X         -
 option tcp-smart-connect             (*)  X          -         X         X
 option tcpka                              X          X         X         X
@@ -1248,6 +1386,10 @@ stick on                                  -          -         X         X
 stick store-request                       -          -         X         X
 stick store-response                      -          -         X         X
 stick-table                               -          -         X         X
+tcp-check connect                         -          -         X         X
+tcp-check expect                          -          -         X         X
+tcp-check send                            -          -         X         X
+tcp-check send-binary                     -          -         X         X
 tcp-request connection                    -          X         X         -
 tcp-request content                       -          X         X         X
 tcp-request inspect-delay                 -          X         X         X
@@ -1255,6 +1397,7 @@ tcp-response content                      -          -         X         X
 tcp-response inspect-delay                -          -         X         X
 timeout check                             X          -         X         X
 timeout client                            X          X         X         -
+timeout client-fin                        X          X         X         -
 timeout clitimeout          (deprecated)  X          X         X         -
 timeout connect                           X          -         X         X
 timeout contimeout          (deprecated)  X          -         X         X
@@ -1262,6 +1405,7 @@ timeout http-keep-alive                   X          X         X         X
 timeout http-request                      X          X         X         X
 timeout queue                             X          -         X         X
 timeout server                            X          -         X         X
+timeout server-fin                        X          -         X         X
 timeout srvtimeout          (deprecated)  X          -         X         X
 timeout tarpit                            X          X         X         X
 timeout tunnel                            X          -         X         X
@@ -1386,7 +1530,7 @@ backlog <conns>
 
 
 balance <algorithm> [ <arguments> ]
-balance url_param <param> [check_post [<max_wait>]]
+balance url_param <param> [check_post]
   Define the load balancing algorithm to be used in a backend.
   May be used in sections :   defaults | frontend | listen | backend
                                  yes   |    no    |   yes  |   yes
@@ -1428,7 +1572,7 @@ balance url_param <param> [check_post [<max_wait>]]
                   adjusted on the fly for slow starts for instance.
 
       first       The first server with available connection slots receives the
-                  connection. The servers are choosen from the lowest numeric
+                  connection. The servers are chosen from the lowest numeric
                   identifier to the highest (see server parameter "id"), which
                   defaults to the server's position in the farm. Once a server
                   reaches its maxconn value, the next server is used. It does
@@ -1491,23 +1635,13 @@ balance url_param <param> [check_post [<max_wait>]]
                   If the modifier "check_post" is used, then an HTTP POST
                   request entity will be searched for the parameter argument,
                   when it is not found in a query string after a question mark
-                  ('?') in the URL. Optionally, specify a number of octets to
-                  wait for before attempting to search the message body. If the
-                  entity can not be searched, then round robin is used for each
-                  request. For instance, if your clients always send the LB
-                  parameter in the first 128 bytes, then specify that. The
-                  default is 48. The entity data will not be scanned until the
-                  required number of octets have arrived at the gateway, this
-                  is the minimum of: (default/max_wait, Content-Length or first
-                  chunk length). If Content-Length is missing or zero, it does
-                  not need to wait for more data than the client promised to
-                  send. When Content-Length is present and larger than
-                  <max_wait>, then waiting is limited to <max_wait> and it is
-                  assumed that this will be enough data to search for the
-                  presence of the parameter. In the unlikely event that
-                  Transfer-Encoding: chunked is used, only the first chunk is
+                  ('?') in the URL. The message body will only start to be
+                  analyzed once either the advertised amount of data has been
+                  received or the request buffer is full. In the unlikely event
+                  that chunked encoding is used, only the first chunk is
                   scanned. Parameter values separated by a chunk boundary, may
-                  be randomly balanced if at all.
+                  be randomly balanced if at all. This keyword used to support
+                  an optional <max_wait> parameter which is now ignored.
 
                   If the parameter is found followed by an equal sign ('=') and
                   a value, then the value is hashed and divided by the total
@@ -1563,9 +1697,6 @@ balance url_param <param> [check_post [<max_wait>]]
     <arguments> is an optional list of arguments which may be needed by some
                 algorithms. Right now, only "url_param" and "uri" support an
                 optional argument.
-
-                balance uri [len <len>] [depth <depth>]
-                balance url_param <param> [check_post [<max_wait>]]
 
   The load balancing algorithm of a backend is set to roundrobin when no other
   algorithm, mode nor option have been set. The algorithm may only be set once
@@ -1633,6 +1764,7 @@ bind /<path> [, ...] [param*]
                     - 'ipv4@'  -> address is always IPv4
                     - 'ipv6@'  -> address is always IPv6
                     - 'unix@'  -> address is a path to a local unix socket
+                    - 'abns@'  -> address is in abstract namespace (Linux only)
                     - 'fd@<n>' -> use file descriptor <n> inherited from the
                       parent. The fd must be bound and may or may not already
                       be listening.
@@ -1703,7 +1835,7 @@ bind /<path> [, ...] [param*]
              documentation, and section 5 about bind options.
 
 
-bind-process [ all | odd | even | <number 1-32>[-<number 1-32>] ] ...
+bind-process [ all | odd | even | <number 1-64>[-<number 1-64>] ] ...
   Limit visibility of an instance to a certain set of processes numbers.
   May be used in sections :   defaults | frontend | listen | backend
                                  yes   |    yes   |   yes  |   yes
@@ -1711,19 +1843,20 @@ bind-process [ all | odd | even | <number 1-32>[-<number 1-32>] ] ...
     all           All process will see this instance. This is the default. It
                   may be used to override a default value.
 
-    odd           This instance will be enabled on processes 1,3,5,...31. This
+    odd           This instance will be enabled on processes 1,3,5,...63. This
                   option may be combined with other numbers.
 
-    even          This instance will be enabled on processes 2,4,6,...32. This
+    even          This instance will be enabled on processes 2,4,6,...64. This
                   option may be combined with other numbers. Do not use it
                   with less than 2 processes otherwise some instances might be
                   missing from all processes.
 
     number        The instance will be enabled on this process number or range,
-                  whose values must all be between 1 and 32. You must be
-                  careful not to reference a process number greater than the
-                  configured global.nbproc, otherwise some instances might be
-                  missing from all processes.
+                  whose values must all be between 1 and 32 or 64 depending on
+                  the machine's word size. If a proxy is bound to process
+                  numbers greater than the configured global.nbproc, it will
+                  either be forced to process #1 if a single process was
+                  specified, or to all processes otherwise.
 
   This keyword limits binding of certain instances to certain processes. This
   is useful in order not to have too many processes listening to the same
@@ -1731,10 +1864,13 @@ bind-process [ all | odd | even | <number 1-32>[-<number 1-32>] ] ...
   'nbproc 2' in the global section, then distributes the listeners among 'odd'
   and 'even' instances.
 
-  At the moment, it is not possible to reference more than 32 processes using
-  this keyword, but this should be more than enough for most setups. Please
-  note that 'all' really means all processes and is not limited to the first
-  32.
+  At the moment, it is not possible to reference more than 32 or 64 processes
+  using this keyword, but this should be more than enough for most setups.
+  Please note that 'all' really means all processes regardless of the machine's
+  word size, and is not limited to the first 32 or 64.
+
+  Each "bind" line may further be limited to a subset of the proxy's processes,
+  please consult the "process" bind keyword in section 5.1.
 
   If some backends are referenced by frontends bound to other processes, the
   backend automatically inherits the frontend's processes.
@@ -1756,7 +1892,7 @@ bind-process [ all | odd | even | <number 1-32>[-<number 1-32>] ] ...
             bind 10.0.0.4:80
             bind-process 1-4
 
-  See also : "nbproc" in global section.
+  See also : "nbproc" in global section, and "process" in section 5.1.
 
 
 block { if | unless } <condition>
@@ -1987,6 +2123,8 @@ compression offload
       "Accept-Encoding" header
     * the response message is not HTTP/1.1
     * HTTP status code is not 200
+    * response header "Transfer-Encoding" contains "chunked" (Temporary
+      Workaround)
     * response contain neither a "Content-Length" header nor a
       "Transfer-Encoding" whose last value is "chunked"
     * response contains a "Content-Type" header whose first value starts with
@@ -2463,7 +2601,9 @@ fullconn <conns>
 
   Since it's hard to get this value right, haproxy automatically sets it to
   10% of the sum of the maxconns of all frontends that may branch to this
-  backend. That way it's safe to leave it unset.
+  backend (based on "use_backend" and "default_backend" rules). That way it's
+  safe to leave it unset. However, "use_backend" involving dynamic names are
+  not counted since there is no way to know if they could match or not.
 
   Example :
      # The servers will accept between 100 and 1000 concurrent connections each
@@ -2533,7 +2673,7 @@ hash-type <method> <function> <modifier>
 
     <function> is the hash function to be used :
 
-       sdbm   this function was created intially for sdbm (a public-domain
+       sdbm   this function was created initially for sdbm (a public-domain
               reimplementation of ndbm) database library. It was found to do
               well in scrambling bits, causing better distribution of the keys
               and fewer splits. It also happens to be a good general hashing
@@ -2725,8 +2865,13 @@ http-check send-state
 
 http-request { allow | deny | tarpit | auth [realm <realm>] | redirect <rule> |
               add-header <name> <fmt> | set-header <name> <fmt> |
-              set-nice <nice> | set-log-level <level> | set-tos <tos> |
-              set-mark <mark> }
+              del-header <name> | set-nice <nice> | set-log-level <level> |
+              set-tos <tos> | set-mark <mark> |
+              add-acl(<file name>) <key fmt> |
+              del-acl(<file name>) <key fmt> |
+              del-map(<file name>) <key fmt> |
+              set-map(<file name>) <key fmt> <value fmt>
+             }
              [ { if | unless } <condition> ]
   Access control for Layer 7 requests
 
@@ -2756,7 +2901,7 @@ http-request { allow | deny | tarpit | auth [realm <realm>] | redirect <rule> |
       when they're limited on the number of concurrent requests. It can be very
       efficient against very dumb robots, and will significantly reduce the
       load on firewalls compared to a "deny" rule. But when facing "correctly"
-      developped robots, it can make things worse by forcing haproxy and the
+      developed robots, it can make things worse by forcing haproxy and the
       front firewall to support insane number of concurrent connections.
 
     - "auth" : this stops the evaluation of the rules and immediately responds
@@ -2768,7 +2913,8 @@ http-request { allow | deny | tarpit | auth [realm <realm>] | redirect <rule> |
     - "redirect" : this performs an HTTP redirection based on a redirect rule.
       This is exactly the same as the "redirect" statement except that it
       inserts a redirect rule which can be processed in the middle of other
-      "http-request" rules. See the "redirect" keyword for the rule's syntax.
+      "http-request" rules and that these rules use the "log-format" strings.
+      See the "redirect" keyword for the rule's syntax.
 
     - "add-header" appends an HTTP header field whose name is specified in
       <name> and whose value is defined by <fmt> which follows the log-format
@@ -2783,6 +2929,9 @@ http-request { allow | deny | tarpit | auth [realm <realm>] | redirect <rule> |
       is first removed if it existed. This is useful when passing security
       information to the server, where the header must not be manipulated by
       external users.
+
+    - "del-header" removes all HTTP header fields whose name is specified in
+      <name>.
 
     - "set-nice" sets the "nice" factor of the current request being processed.
       It only has effect against the other requests being processed at the same
@@ -2818,6 +2967,39 @@ http-request { allow | deny | tarpit | auth [realm <realm>] | redirect <rule> |
       downloads). This works on Linux kernels 2.6.32 and above and requires
       admin privileges.
 
+    - "add-acl" is used to add a new entry into an ACL. The ACL must be loaded
+      from a file (even a dummy empty file). The file name of the ACL to be
+      updated is passed between parentheses. It takes one argument: <key fmt>,
+      which follows log-format rules, to collect content of the new entry. It
+      performs a lookup in the ACL before insertion, to avoid duplicated (or
+      more) values. This lookup is done by a linear search and can be expensive
+      with large lists! It is the equivalent of the "add acl" command from the
+      stats socket, but can be triggered by an HTTP request.
+
+    - "del-acl" is used to delete an entry from an ACL. The ACL must be loaded
+      from a file (even a dummy empty file). The file name of the ACL to be
+      updated is passed between parentheses. It takes one argument: <key fmt>,
+      which follows log-format rules, to collect content of the entry to delete.
+      It is the equivalent of the "del acl" command from the stats socket, but
+      can be triggered by an HTTP request.
+
+    - "del-map" is used to delete an entry from a MAP. The MAP must be loaded
+      from a file (even a dummy empty file). The file name of the MAP to be
+      updated is passed between parentheses. It takes one argument: <key fmt>,
+      which follows log-format rules, to collect content of the entry to delete.
+      It takes one argument: "file name" It is the equivalent of the "del map"
+      command from the stats socket, but can be triggered by an HTTP request.
+
+    - "set-map" is used to add a new entry into a MAP. The MAP must be loaded
+      from a file (even a dummy empty file). The file name of the MAP to be
+      updated is passed between parentheses. It takes 2 arguments: <key fmt>,
+      which follows log-format rules, used to collect MAP key, and <value fmt>,
+      which follows log-format rules, used to collect content for the new entry.
+      It performs a lookup in the MAP before insertion, to avoid duplicated (or
+      more) values. This lookup is done by a linear search and can be expensive
+      with large lists! It is the equivalent of the "set map" command from the
+      stats socket, but can be triggered by an HTTP request.
+
   There is no limit to the number of http-request statements per instance.
 
   It is important to know that http-request rules are processed very early in
@@ -2850,12 +3032,37 @@ http-request { allow | deny | tarpit | auth [realm <realm>] | redirect <rule> |
         http-request set-header X-SSL-Client-NotBefore %{+Q}[ssl_c_notbefore]
         http-request set-header X-SSL-Client-NotAfter  %{+Q}[ssl_c_notafter]
 
+  Example:
+        acl key req.hdr(X-Add-Acl-Key) -m found
+        acl add path /addacl
+        acl del path /delacl
+
+        acl myhost hdr(Host) -f myhost.lst
+
+        http-request add-acl(myhost.lst) %[req.hdr(X-Add-Acl-Key)] if key add
+        http-request del-acl(myhost.lst) %[req.hdr(X-Add-Acl-Key)] if key del
+
+  Example:
+        acl value  req.hdr(X-Value) -m found
+        acl setmap path /setmap
+        acl delmap path /delmap
+
+        use_backend bk_appli if { hdr(Host),map_str(map.lst) -m found }
+
+        http-request set-map(map.lst) %[src] %[req.hdr(X-Value)] if setmap value
+        http-request del-map(map.lst) %[src]                     if delmap
+
   See also : "stats http-request", section 3.4 about userlists and section 7
              about ACL usage.
 
 http-response { allow | deny | add-header <name> <fmt> | set-nice <nice> |
-                set-header <name> <fmt> | set-log-level <level> |
-                set-mark <mark> | set-tos <tos> }
+                set-header <name> <fmt> | del-header <name> |
+                set-log-level <level> | set-mark <mark> | set-tos <tos> |
+                add-acl(<file name>) <key fmt> |
+                del-acl(<file name>) <key fmt> |
+                del-map(<file name>) <key fmt> |
+                set-map(<file name>) <key fmt> <value fmt>
+              }
               [ { if | unless } <condition> ]
   Access control for Layer 7 responses
 
@@ -2891,6 +3098,9 @@ http-response { allow | deny | add-header <name> <fmt> | set-nice <nice> |
       information to the server, where the header must not be manipulated by
       external users.
 
+    - "del-header" removes all HTTP header fields whose name is specified in
+      <name>.
+
     - "set-nice" sets the "nice" factor of the current request being processed.
       It only has effect against the other requests being processed at the same
       time. The default value is 0, unless altered by the "nice" setting on the
@@ -2925,6 +3135,39 @@ http-response { allow | deny | add-header <name> <fmt> | set-nice <nice> |
       downloads). This works on Linux kernels 2.6.32 and above and requires
       admin privileges.
 
+    - "add-acl" is used to add a new entry into an ACL. The ACL must be loaded
+      from a file (even a dummy empty file). The file name of the ACL to be
+      updated is passed between parentheses. It takes one argument: <key fmt>,
+      which follows log-format rules, to collect content of the new entry. It
+      performs a lookup in the ACL before insertion, to avoid duplicated (or
+      more) values. This lookup is done by a linear search and can be expensive
+      with large lists! It is the equivalent of the "add acl" command from the
+      stats socket, but can be triggered by an HTTP response.
+
+    - "del-acl" is used to delete an entry from an ACL. The ACL must be loaded
+      from a file (even a dummy empty file). The file name of the ACL to be
+      updated is passed between parentheses. It takes one argument: <key fmt>,
+      which follows log-format rules, to collect content of the entry to delete.
+      It is the equivalent of the "del acl" command from the stats socket, but
+      can be triggered by an HTTP response.
+
+    - "del-map" is used to delete an entry from a MAP. The MAP must be loaded
+      from a file (even a dummy empty file). The file name of the MAP to be
+      updated is passed between parentheses. It takes one argument: <key fmt>,
+      which follows log-format rules, to collect content of the entry to delete.
+      It takes one argument: "file name" It is the equivalent of the "del map"
+      command from the stats socket, but can be triggered by an HTTP response.
+
+    - "set-map" is used to add a new entry into a MAP. The MAP must be loaded
+      from a file (even a dummy empty file). The file name of the MAP to be
+      updated is passed between parentheses. It takes 2 arguments: <key fmt>,
+      which follows log-format rules, used to collect MAP key, and <value fmt>,
+      which follows log-format rules, used to collect content for the new entry.
+      It performs a lookup in the MAP before insertion, to avoid duplicated (or
+      more) values. This lookup is done by a linear search and can be expensive
+      with large lists! It is the equivalent of the "set map" command from the
+      stats socket, but can be triggered by an HTTP response.
+
   There is no limit to the number of http-response statements per instance.
 
   It is important to know that http-response rules are processed very early in
@@ -2932,8 +3175,25 @@ http-response { allow | deny | add-header <name> <fmt> | set-nice <nice> |
   added by "add-header"/"set-header" are visible by almost all further ACL
   rules.
 
+  Example:
+         acl key_acl res.hdr(X-Acl-Key) -m found
+
+         acl myhost hdr(Host) -f myhost.lst
+
+         http-response add-acl(myhost.lst) %[res.hdr(X-Acl-Key)] if key_acl
+         http-response del-acl(myhost.lst) %[res.hdr(X-Acl-Key)] if key_acl
+
+  Example:
+         acl value  res.hdr(X-Value) -m found
+
+         use_backend bk_appli if { hdr(Host),map_str(map.lst) -m found }
+
+         http-response set-map(map.lst) %[src] %[res.hdr(X-Value)] if value
+         http-response del-map(map.lst) %[src]                     if ! value
+
   See also : "http-request", section 3.4 about userlists and section 7 about
              ACL usage.
+
 
 http-send-name-header [<header>]
   Add the server name to a request. Use the header string given by <header>
@@ -2974,7 +3234,7 @@ ignore-persist { if | unless } <condition>
   The "ignore-persist" statement allows one to declare various ACL-based
   conditions which, when met, will cause a request to ignore persistence.
   This is sometimes useful to load balance requests for static files, which
-  oftenly don't require persistence. This can also be used to fully disable
+  often don't require persistence. This can also be used to fully disable
   persistence for a specific User-Agent (for example, some web crawler bots).
 
   Combined with "appsession", it can also help reduce HAProxy memory usage, as
@@ -3067,6 +3327,34 @@ log-format <string>
    Allows you to custom a log line.
 
    See also : Custom Log Format (8.2.4)
+
+
+max-keep-alive-queue <value>
+  Set the maximum server queue size for maintaining keep-alive connections
+  May be used in sections:    defaults | frontend | listen | backend
+                                 yes   |     no   |   yes  |   yes
+
+  HTTP keep-alive tries to reuse the same server connection whenever possible,
+  but sometimes it can be counter-productive, for example if a server has a lot
+  of connections while other ones are idle. This is especially true for static
+  servers.
+
+  The purpose of this setting is to set a threshold on the number of queued
+  connections at which haproxy stops trying to reuse the same server and prefers
+  to find another one. The default value, -1, means there is no limit. A value
+  of zero means that keep-alive requests will never be queued. For very close
+  servers which can be reached with a low latency and which are not sensible to
+  breaking keep-alive, a low value is recommended (eg: local static server can
+  use a value of 10 or less). For remote servers suffering from a high latency,
+  higher values might be needed to cover for the latency and/or the cost of
+  picking a different server.
+
+  Note that this has no impact on responses which are maintained to the same
+  server consecutively to a 401 response. They will still go to the same server
+  even if they have to be queued.
+
+  See also : "option http-server-close", "option prefer-last-server", server
+             "maxconn" and cookie persistence.
 
 
 maxconn <conns>
@@ -3385,7 +3673,7 @@ no option allbackups
 
 option checkcache
 no option checkcache
-  Analyze all server responses and block requests with cacheable cookies
+  Analyze all server responses and block responses with cacheable cookies
   May be used in sections :   defaults | frontend | listen | backend
                                  yes   |     no   |   yes  |   yes
   Arguments : none
@@ -3546,14 +3834,14 @@ no option forceclose
 
   When this happens, it is possible to use "option forceclose". It will
   actively close the outgoing server channel as soon as the server has finished
-  to respond. This option implicitly enables the "httpclose" option. Note that
-  this option also enables the parsing of the full request and response, which
-  means we can close the connection to the server very quickly, releasing some
-  resources earlier than with httpclose.
+  to respond and release some resources earlier than with "option httpclose".
 
   This option may also be combined with "option http-pretend-keepalive", which
   will disable sending of the "Connection: close" header, but will still cause
   the connection to be closed once the whole response is received.
+
+  This option disables and replaces any previous "option httpclose", "option
+  http-server-close", "option http-keep-alive", or "option http-tunnel".
 
   If this option has been enabled in a "defaults" section, it can be disabled
   in a specific instance by prepending the "no" keyword before it.
@@ -3609,12 +3897,6 @@ option forwardfor [ except <network> ] [ header <name> ] [ if-none ]
   the frontend or the backend does not specify it, it wants the addition to be
   mandatory, so it wins.
 
-  It is important to note that by default, HAProxy works in tunnel mode and
-  only inspects the first request of a connection, meaning that only the first
-  request will have the header appended, which is certainly not what you want.
-  In order to fix this, ensure that any of the "httpclose", "forceclose" or
-  "http-server-close" options is set when using this option.
-
   Examples :
     # Public HTTP address also used by stunnel on the same machine
     frontend www
@@ -3627,7 +3909,67 @@ option forwardfor [ except <network> ] [ header <name> ] [ if-none ]
         option forwardfor header X-Client
 
   See also : "option httpclose", "option http-server-close",
-             "option forceclose"
+             "option forceclose", "option http-keep-alive"
+
+
+option http-keep-alive
+no option http-keep-alive
+  Enable or disable HTTP keep-alive from client to server
+  May be used in sections :   defaults | frontend | listen | backend
+                                 yes   |    yes   |   yes  |   yes
+  Arguments : none
+
+  By default HAProxy operates in keep-alive mode with regards to persistent
+  connections: for each connection it processes each request and response, and
+  leaves the connection idle on both sides between the end of a response and the
+  start of a new request. This mode may be changed by several options such as
+  "option http-server-close", "option forceclose", "option httpclose" or
+  "option http-tunnel". This option allows to set back the keep-alive mode,
+  which can be useful when another mode was used in a defaults section.
+
+  Setting "option http-keep-alive" enables HTTP keep-alive mode on the client-
+  and server- sides. This provides the lowest latency on the client side (slow
+  network) and the fastest session reuse on the server side at the expense
+  of maintaining idle connections to the servers. In general, it is possible
+  with this option to achieve approximately twice the request rate that the
+  "http-server-close" option achieves on small objects. There are mainly two
+  situations where this option may be useful :
+
+    - when the server is non-HTTP compliant and authenticates the connection
+      instead of requests (eg: NTLM authentication)
+
+    - when the cost of establishing the connection to the server is significant
+      compared to the cost of retrieving the associated object from the server.
+
+  This last case can happen when the server is a fast static server of cache.
+  In this case, the server will need to be properly tuned to support high enough
+  connection counts because connections will last until the client sends another
+  request.
+
+  If the client request has to go to another backend or another server due to
+  content switching or the load balancing algorithm, the idle connection will
+  immediately be closed and a new one re-opened. Option "prefer-last-server" is
+  available to try optimize server selection so that if the server currently
+  attached to an idle connection is usable, it will be used.
+
+  In general it is preferred to use "option http-server-close" with application
+  servers, and some static servers might benefit from "option http-keep-alive".
+
+  At the moment, logs will not indicate whether requests came from the same
+  session or not. The accept date reported in the logs corresponds to the end
+  of the previous request, and the request time corresponds to the time spent
+  waiting for a new request. The keep-alive request time is still bound to the
+  timeout defined by "timeout http-keep-alive" or "timeout http-request" if
+  not set.
+
+  This option disables and replaces any previous "option httpclose", "option
+  http-server-close", "option forceclose" or "option http-tunnel". When backend
+  and frontend options differ, all of these 4 options have precedence over
+  "option http-keep-alive".
+
+  See also : "option forceclose", "option http-server-close",
+             "option prefer-last-server", "option http-pretend-keepalive",
+             "option httpclose", and "1.1. The HTTP transaction model".
 
 
 option http-no-delay
@@ -3702,7 +4044,8 @@ no option http-pretend-keepalive
   If this option has been enabled in a "defaults" section, it can be disabled
   in a specific instance by prepending the "no" keyword before it.
 
-  See also : "option forceclose" and "option http-server-close"
+  See also : "option forceclose", "option http-server-close", and
+             "option http-keep-alive"
 
 
 option http-server-close
@@ -3712,18 +4055,22 @@ no option http-server-close
                                  yes   |    yes   |   yes  |   yes
   Arguments : none
 
-  By default, when a client communicates with a server, HAProxy will only
-  analyze, log, and process the first request of each connection. Setting
-  "option http-server-close" enables HTTP connection-close mode on the server
-  side while keeping the ability to support HTTP keep-alive and pipelining on
-  the client side.  This provides the lowest latency on the client side (slow
-  network) and the fastest session reuse on the server side to save server
-  resources, similarly to "option forceclose". It also permits non-keepalive
-  capable servers to be served in keep-alive mode to the clients if they
-  conform to the requirements of RFC2616. Please note that some servers do not
-  always conform to those requirements when they see "Connection: close" in the
-  request. The effect will be that keep-alive will never be used. A workaround
-  consists in enabling "option http-pretend-keepalive".
+  By default HAProxy operates in keep-alive mode with regards to persistent
+  connections: for each connection it processes each request and response, and
+  leaves the connection idle on both sides between the end of a response and
+  the start of a new request. This mode may be changed by several options such
+  as "option http-server-close", "option forceclose", "option httpclose" or
+  "option http-tunnel". Setting "option http-server-close" enables HTTP
+  connection-close mode on the server side while keeping the ability to support
+  HTTP keep-alive and pipelining on the client side.  This provides the lowest
+  latency on the client side (slow network) and the fastest session reuse on
+  the server side to save server resources, similarly to "option forceclose".
+  It also permits non-keepalive capable servers to be served in keep-alive mode
+  to the clients if they conform to the requirements of RFC2616. Please note
+  that some servers do not always conform to those requirements when they see
+  "Connection: close" in the request. The effect will be that keep-alive will
+  never be used. A workaround consists in enabling "option
+  http-pretend-keepalive".
 
   At the moment, logs will not indicate whether requests came from the same
   session or not. The accept date reported in the logs corresponds to the end
@@ -3734,15 +4081,49 @@ no option http-server-close
 
   This option may be set both in a frontend and in a backend. It is enabled if
   at least one of the frontend or backend holding a connection has it enabled.
-  It is worth noting that "option forceclose" has precedence over "option
-  http-server-close" and that combining "http-server-close" with "httpclose"
-  basically achieve the same result as "forceclose".
+  It disables and replaces any previous "option httpclose", "option forceclose",
+  "option http-tunnel" or "option http-keep-alive". Please check section 4
+  ("Proxies") to see how this option combines with others when frontend and
+  backend options differ.
 
   If this option has been enabled in a "defaults" section, it can be disabled
   in a specific instance by prepending the "no" keyword before it.
 
   See also : "option forceclose", "option http-pretend-keepalive",
-             "option httpclose" and "1.1. The HTTP transaction model".
+             "option httpclose", "option http-keep-alive", and
+             "1.1. The HTTP transaction model".
+
+
+option http-tunnel
+no option http-tunnel
+  Disable or enable HTTP connection processing after first transaction
+  May be used in sections :   defaults | frontend | listen | backend
+                                 yes   |    yes   |   yes  |   yes
+  Arguments : none
+
+  By default HAProxy operates in keep-alive mode with regards to persistent
+  connections: for each connection it processes each request and response, and
+  leaves the connection idle on both sides between the end of a response and
+  the start of a new request. This mode may be changed by several options such
+  as "option http-server-close", "option forceclose", "option httpclose" or
+  "option http-tunnel".
+
+  Option "http-tunnel" disables any HTTP processing past the first request and
+  the first response. This is the mode which was used by default in versions
+  1.0 to 1.5-dev21. It is the mode with the lowest processing overhead, which
+  is normally not needed anymore unless in very specific cases such as when
+  using an in-house protocol that looks like HTTP but is not compatible, or
+  just to log one request per client in order to reduce log size. Note that
+  everything which works at the HTTP level, including header parsing/addition,
+  cookie processing or content switching will only work for the first request
+  and will be ignored after the first response.
+
+  If this option has been enabled in a "defaults" section, it can be disabled
+  in a specific instance by prepending the "no" keyword before it.
+
+  See also : "option forceclose", "option http-server-close",
+             "option httpclose", "option http-keep-alive", and
+             "1.1. The HTTP transaction model".
 
 
 option http-use-proxy-header
@@ -3823,9 +4204,9 @@ option httpchk <method> <uri> <version>
           option httpchk OPTIONS * HTTP/1.1\r\nHost:\ www
           server apache1 192.168.1.1:443 check port 80
 
-  See also : "option lb-agent-chk", "option ssl-hello-chk", "option smtpchk",
-             "option mysql-check", "option pgsql-check", "http-check" and
-             the "check", "port" and "inter" server options.
+  See also : "option ssl-hello-chk", "option smtpchk", "option mysql-check",
+             "option pgsql-check", "http-check" and the "check", "port" and
+             "inter" server options.
 
 
 option httpclose
@@ -3835,13 +4216,21 @@ no option httpclose
                                  yes   |    yes   |   yes  |   yes
   Arguments : none
 
-  By default, when a client communicates with a server, HAProxy will only
-  analyze, log, and process the first request of each connection. If "option
-  httpclose" is set, it will check if a "Connection: close" header is already
-  set in each direction, and will add one if missing. Each end should react to
-  this by actively closing the TCP connection after each transfer, thus
-  resulting in a switch to the HTTP close mode. Any "Connection" header
-  different from "close" will also be removed.
+  By default HAProxy operates in keep-alive mode with regards to persistent
+  connections: for each connection it processes each request and response, and
+  leaves the connection idle on both sides between the end of a response and
+  the start of a new request. This mode may be changed by several options such
+  as "option http-server-close", "option forceclose", "option httpclose" or
+  "option http-tunnel".
+
+  If "option httpclose" is set, HAProxy will work in HTTP tunnel mode and check
+  if a "Connection: close" header is already set in each direction, and will
+  add one if missing. Each end should react to this by actively closing the TCP
+  connection after each transfer, thus resulting in a switch to the HTTP close
+  mode. Any "Connection" header different from "close" will also be removed.
+  Note that this option is deprecated since what it does is very cheap but not
+  reliable. Using "option http-server-close" or "option forceclose" is strongly
+  recommended instead.
 
   It seldom happens that some servers incorrectly ignore this header and do not
   close the connection even though they reply "Connection: close". For this
@@ -3853,9 +4242,10 @@ no option httpclose
 
   This option may be set both in a frontend and in a backend. It is enabled if
   at least one of the frontend or backend holding a connection has it enabled.
-  If "option forceclose" is specified too, it has precedence over "httpclose".
-  If "option http-server-close" is enabled at the same time as "httpclose", it
-  basically achieves the same result as "option forceclose".
+  It disables and replaces any previous "option http-server-close",
+  "option forceclose", "option http-keep-alive" or "option http-tunnel". Please
+  check section 4 ("Proxies") to see how this option combines with others when
+  frontend and backend options differ.
 
   If this option has been enabled in a "defaults" section, it can be disabled
   in a specific instance by prepending the "no" keyword before it.
@@ -3955,50 +4345,11 @@ no option independent-streams
   data sent to the server. Doing so will typically break large HTTP posts from
   slow lines, so use it with caution.
 
-  Note: older versions used to call this setting "option independant-streams"
+  Note: older versions used to call this setting "option independent-streams"
         with a spelling mistake. This spelling is still supported but
         deprecated.
 
   See also : "timeout client", "timeout server" and "timeout tunnel"
-
-
-option lb-agent-chk
-  Use a TCP connection to obtain a metric of server health
-  May be used in sections :   defaults | frontend | listen | backend
-                                 yes   |     no   |   yes  |   yes
-  Arguments : none
-
-  This alters health checking behaviour by connecting making a TCP
-  connection and reading an ASCII string. The string should have one of
-  the following forms:
-
-  * An ASCII representation of an positive integer percentage.
-     e.g. "75%"
-
-     Values in this format will set the weight proportional to the initial
-     weight of a server as configured when haproxy starts.
-
-  * The string "drain".
-
-    This will cause the weight of a server to be set to 0, and thus it will
-    not accept any new connections other than those that are accepted via
-    persistence.
-
-  * The string "down", optionally followed by a description string.
-
-    Mark the server as down and log the description string as the reason.
-
-  * The string "stopped", optionally followed by a description string.
-
-    This currently has the same behaviour as down (iii).
-
-  * The string "fail", optionally followed by a description string.
-
-    This currently has the same behaviour as down (iii).
-
-  The use of an alternate check-port, used to obtain agent heath check
-  information described above as opposed to the port of the service, may be
-  useful in conjunction with this option.
 
 
 option ldap-check
@@ -4026,20 +4377,27 @@ option ldap-check
 
 option log-health-checks
 no option log-health-checks
-  Enable or disable logging of health checks
+  Enable or disable logging of health checks status updates
   May be used in sections :   defaults | frontend | listen | backend
                                  yes   |    no    |   yes  |  yes
   Arguments : none
 
-  Enable health checks logging so it possible to check for example what
-  was happening before a server crash. Failed health check are logged if
-  server is UP and succeeded health checks if server is DOWN, so the amount
-  of additional information is limited.
+  By default, failed health check are logged if server is UP and successful
+  health checks are logged if server is DOWN, so the amount of additional
+  information is limited.
 
-  If health check logging is enabled no health check status is printed
-  when servers is set up UP/DOWN/ENABLED/DISABLED.
+  When this option is enabled, any change of the health check status or to
+  the server's health will be logged, so that it becomes possible to know
+  that a server was failing occasional checks before crashing, or exactly when
+  it failed to respond a valid HTTP status, then when the port started to
+  reject connections, then when the server stopped responding at all.
 
-  See also: "log" and section 8 about logging.
+  Note that status changes not caused by health checks (eg: enable/disable on
+  the CLI) are intentionally not logged by this option.
+
+  See also: "option httpchk", "option ldap-check", "option mysql-check",
+            "option pgsql-check", "option redis-check", "option smtpchk",
+            "option tcp-check", "log" and section 8 about logging.
 
 
 option log-separate-errors
@@ -4142,20 +4500,6 @@ option mysql-check [ user <username> ]
 
   See also: "option httpchk"
 
-option pgsql-check [ user <username> ]
-  Use PostgreSQL health checks for server testing
-  May be used in sections :   defaults | frontend | listen | backend
-                                 yes   |    no    |   yes  |   yes
-  Arguments :
-    <username> This is the username which will be used when connecting to
-               PostgreSQL server.
-
-  The check sends a PostgreSQL StartupMessage and waits for either
-  Authentication request or ErrorResponse message. It is a basic but useful
-  test which does not produce error nor aborted connect on the server.
-  This check is identical with the "mysql-check".
-
-  See also: "option httpchk"
 
 option nolinger
 no option nolinger
@@ -4229,12 +4573,6 @@ option originalto [ except <network> ] [ header <name> ]
   setting of the header subargument takes precedence over the frontend's if
   both are defined.
 
-  It is important to note that by default, HAProxy works in tunnel mode and
-  only inspects the first request of a connection, meaning that only the first
-  request will have the header appended, which is certainly not what you want.
-  In order to fix this, ensure that any of the "httpclose", "forceclose" or
-  "http-server-close" options is set when using this option.
-
   Examples :
     # Original Destination address
     frontend www
@@ -4272,6 +4610,52 @@ no option persist
   in a specific instance by prepending the "no" keyword before it.
 
   See also : "option redispatch", "retries", "force-persist"
+
+
+option pgsql-check [ user <username> ]
+  Use PostgreSQL health checks for server testing
+  May be used in sections :   defaults | frontend | listen | backend
+                                 yes   |    no    |   yes  |   yes
+  Arguments :
+    <username> This is the username which will be used when connecting to
+               PostgreSQL server.
+
+  The check sends a PostgreSQL StartupMessage and waits for either
+  Authentication request or ErrorResponse message. It is a basic but useful
+  test which does not produce error nor aborted connect on the server.
+  This check is identical with the "mysql-check".
+
+  See also: "option httpchk"
+
+
+option prefer-last-server
+no option prefer-last-server
+  Allow multiple load balanced requests to remain on the same server
+  May be used in sections:    defaults | frontend | listen | backend
+                                 yes   |    no    |   yes  |   yes
+  Arguments : none
+
+  When the load balancing algorithm in use is not deterministic, and a previous
+  request was sent to a server to which haproxy still holds a connection, it is
+  sometimes desirable that subsequent requests on a same session go to the same
+  server as much as possible. Note that this is different from persistence, as
+  we only indicate a preference which haproxy tries to apply without any form
+  of warranty. The real use is for keep-alive connections sent to servers. When
+  this option is used, haproxy will try to reuse the same connection that is
+  attached to the server instead of rebalancing to another server, causing a
+  close of the connection. This can make sense for static file servers. It does
+  not make much sense to use this in combination with hashing algorithms. Note,
+  haproxy already automatically tries to stick to a server which sends a 401 or
+  to a proxy which sends a 407 (authentication required). This is mandatory for
+  use with the broken NTLM authentication challenge, and significantly helps in
+  troubleshooting some faulty applications. Option prefer-last-server might be
+  desirable in these environments as well, to avoid redistributing the traffic
+  after every other response.
+
+  If this option has been enabled in a "defaults" section, it can be disabled
+  in a specific instance by prepending the "no" keyword before it.
+
+  See also: "option http-keep-alive"
 
 
 option redispatch
@@ -4516,6 +4900,75 @@ option ssl-hello-chk
   See also: "option httpchk", "check-ssl"
 
 
+option tcp-check
+  Perform health checks using tcp-check send/expect sequences
+  May be used in sections:   defaults | frontend | listen | backend
+                               yes    |    no    |   yes  |   yes
+
+  This health check method is intended to be combined with "tcp-check" command
+  lists in order to support send/expect types of health check sequences.
+
+  TCP checks currently support 4 modes of operations :
+    - no "tcp-check" directive : the health check only consists in a connection
+      attempt, which remains the default mode.
+
+    - "tcp-check send" or "tcp-check send-binary" only is mentioned : this is
+      used to send a string along with a connection opening. With some
+      protocols, it helps sending a "QUIT" message for example that prevents
+      the server from logging a connection error for each health check. The
+      check result will still be based on the ability to open the connection
+      only.
+
+    - "tcp-check expect" only is mentioned : this is used to test a banner.
+      The connection is opened and haproxy waits for the server to present some
+      contents which must validate some rules. The check result will be based
+      on the matching between the contents and the rules. This is suited for
+      POP, IMAP, SMTP, FTP, SSH, TELNET.
+
+    - both "tcp-check send" and "tcp-check expect" are mentioned : this is
+      used to test a hello-type protocol. Haproxy sends a message, the server
+      responds and its response is analysed. the check result will be based on
+      the matching between the response contents and the rules. This is often
+      suited for protocols which require a binding or a request/response model.
+      LDAP, MySQL, Redis and SSL are example of such protocols, though they
+      already all have their dedicated checks with a deeper understanding of
+      the respective protocols.
+      In this mode, many questions may be sent and many answers may be
+      analysed.
+
+  Examples :
+         # perform a POP check (analyse only server's banner)
+         option tcp-check
+         tcp-check expect string +OK\ POP3\ ready
+
+         # perform an IMAP check (analyse only server's banner)
+         option tcp-check
+         tcp-check expect string *\ OK\ IMAP4\ ready
+
+         # look for the redis master server after ensuring it speaks well
+         # redis protocol, then it exits properly.
+         # (send a command then analyse the response 3 times)
+         option tcp-check
+         tcp-check send PING\r\n
+         tcp-check expect +PONG
+         tcp-check send info\ replication\r\n
+         tcp-check expect string role:master
+         tcp-check send QUIT\r\n
+         tcp-check expect string +OK
+
+         forge a HTTP request, then analyse the response
+         (send many headers before analyzing)
+         option tcp-check
+         tcp-check send HEAD\ /\ HTTP/1.1\r\n
+         tcp-check send Host:\ www.mydomain.com\r\n
+         tcp-check send User-Agent:\ HAProxy\ tcpcheck\r\n
+         tcp-check send \r\n
+         tcp-check expect rstring HTTP/1\..\ (2..|3..)
+
+
+  See also : "tcp-check expect", "tcp-check send"
+
+
 option tcp-smart-accept
 no option tcp-smart-accept
   Enable or disable the saving of one ACK packet during the accept sequence
@@ -4748,14 +5201,19 @@ redirect scheme   <sch> [code <code>] <option> [{if | unless} <condition>]
 
   Arguments :
     <loc>     With "redirect location", the exact value in <loc> is placed into
-              the HTTP "Location" header.
+              the HTTP "Location" header. When used in an "http-request" rule,
+              <loc> value follows the log-format rules and can include some
+              dynamic values (see Custom Log Format in section 8.2.4).
 
     <pfx>     With "redirect prefix", the "Location" header is built from the
               concatenation of <pfx> and the complete URI path, including the
               query string, unless the "drop-query" option is specified (see
               below). As a special case, if <pfx> equals exactly "/", then
               nothing is inserted before the original URI. It allows one to
-              redirect to the same URL (for instance, to insert a cookie).
+              redirect to the same URL (for instance, to insert a cookie). When
+              used in an "http-request" rule, <pfx> value follows the log-format
+              rules and can include some dynamic values (see Custom Log Format
+              in section 8.2.4).
 
     <sch>     With "redirect scheme", then the "Location" header is built by
               concatenating <sch> with "://" then the first occurrence of the
@@ -4763,9 +5221,11 @@ redirect scheme   <sch> [code <code>] <option> [{if | unless} <condition>]
               unless the "drop-query" option is specified (see below). If no
               path is found or if the path is "*", then "/" is used instead. If
               no "Host" header is found, then an empty host component will be
-              returned, which most recent browsers interprete as redirecting to
+              returned, which most recent browsers interpret as redirecting to
               the same host. This directive is mostly used to redirect HTTP to
-              HTTPS.
+              HTTPS. When used in an "http-request" rule, <sch> value follows
+              the log-format rules and can include some dynamic values (see
+              Custom Log Format in section 8.2.4).
 
     <code>    The code is optional. It indicates which type of HTTP redirection
               is desired. Only codes 301, 302, 303, 307 and 308 are supported,
@@ -4828,6 +5288,10 @@ redirect scheme   <sch> [code <code>] <option> [{if | unless} <condition>]
 
   Example: redirect all HTTP traffic to HTTPS when SSL is handled by haproxy.
         redirect scheme https if !{ ssl_fc }
+
+  Example: append 'www.' prefix in front of all hosts not having it
+        http-request redirect code 301 location www.%[hdr(host)]%[req.uri] \
+          unless { hdr_beg(host) -i www }
 
   See section 7 about ACL usage.
 
@@ -5296,6 +5760,7 @@ server <name> <address>[:[port]] [param*]
                     - 'ipv4@'  -> address is always IPv4
                     - 'ipv6@'  -> address is always IPv6
                     - 'unix@'  -> address is a path to a local unix socket
+                    - 'abns@'  -> address is in abstract namespace (Linux only)
               Any part of the address string may reference any number of
               environment variables by preceding their name with a dollar
               sign ('$') and optionally enclosing them with braces ('{}'),
@@ -5342,6 +5807,7 @@ source <addr>[:<port>] [interface <name>]
                 - 'ipv4@' -> address is always IPv4
                 - 'ipv6@' -> address is always IPv6
                 - 'unix@' -> address is a path to a local unix socket
+                - 'abns@' -> address is in abstract namespace (Linux only)
               Any part of the address string may reference any number of
               environment variables by preceding their name with a dollar
               sign ('$') and optionally enclosing them with braces ('{}'),
@@ -5515,7 +5981,7 @@ srvtimeout <timeout> (deprecated)
 stats admin { if | unless } <cond>
   Enable statistics admin level if/unless a condition is matched
   May be used in sections :   defaults | frontend | listen | backend
-                                 no    |    no    |   yes  |   yes
+                                 no    |    yes   |   yes  |   yes
 
   This statement enables the statistics admin level if/unless a condition is
   matched.
@@ -5568,7 +6034,7 @@ stats admin { if | unless } <cond>
 stats auth <user>:<passwd>
   Enable statistics with authentication and grant access to an account
   May be used in sections :   defaults | frontend | listen | backend
-                                 yes   |    no    |   yes  |   yes
+                                 yes   |    yes   |   yes  |   yes
   Arguments :
     <user>    is a user name to grant access to
 
@@ -5617,7 +6083,7 @@ stats auth <user>:<passwd>
 stats enable
   Enable statistics reporting with default settings
   May be used in sections :   defaults | frontend | listen | backend
-                                 yes   |    no    |   yes  |   yes
+                                 yes   |    yes   |   yes  |   yes
   Arguments : none
 
   This statement enables statistics reporting with default settings defined
@@ -5655,7 +6121,7 @@ stats enable
 stats hide-version
   Enable statistics and hide HAProxy version reporting
   May be used in sections :   defaults | frontend | listen | backend
-                                 yes   |    no    |   yes  |   yes
+                                 yes   |    yes   |   yes  |   yes
   Arguments : none
 
   By default, the stats page reports some useful status information along with
@@ -5714,7 +6180,7 @@ stats http-request { allow | deny | auth [realm <realm>] }
 stats realm <realm>
   Enable statistics and set authentication realm
   May be used in sections :   defaults | frontend | listen | backend
-                                 yes   |    no    |   yes  |   yes
+                                 yes   |    yes   |   yes  |   yes
   Arguments :
     <realm>   is the name of the HTTP Basic Authentication realm reported to
               the browser. The browser uses it to display it in the pop-up
@@ -5754,7 +6220,7 @@ stats realm <realm>
 stats refresh <delay>
   Enable statistics with automatic refresh
   May be used in sections :   defaults | frontend | listen | backend
-                                 yes   |    no    |   yes  |   yes
+                                 yes   |    yes   |   yes  |   yes
   Arguments :
     <delay>   is the suggested refresh delay, specified in seconds, which will
               be returned to the browser consulting the report page. While the
@@ -5796,7 +6262,7 @@ stats refresh <delay>
 stats scope { <name> | "." }
   Enable statistics and limit access scope
   May be used in sections :   defaults | frontend | listen | backend
-                                 yes   |    no    |   yes  |   yes
+                                 yes   |    yes   |   yes  |   yes
   Arguments :
     <name>    is the name of a listen, frontend or backend section to be
               reported. The special name "." (a single dot) designates the
@@ -5837,7 +6303,7 @@ stats scope { <name> | "." }
 stats show-desc [ <desc> ]
   Enable reporting of a description on the statistics page.
   May be used in sections :   defaults | frontend | listen | backend
-                                 yes   |    no    |   yes  |   yes
+                                 yes   |    yes   |   yes  |   yes
 
     <desc>    is an optional description to be reported. If unspecified, the
               description from global section is automatically used instead.
@@ -5862,7 +6328,12 @@ stats show-desc [ <desc> ]
 
 
 stats show-legends
-  Enable reporting additional informations on the statistics page :
+  Enable reporting additional information on the statistics page
+  May be used in sections :   defaults | frontend | listen | backend
+                                 yes   |    yes   |   yes  |   yes
+  Arguments : none
+
+  Enable reporting additional information on the statistics page :
     - cap: capabilities (proxy)
     - mode: one of tcp, http or health (proxy)
     - id: SNMP ID (proxy, socket, server)
@@ -5879,7 +6350,7 @@ stats show-legends
 stats show-node [ <name> ]
   Enable reporting of a host name on the statistics page.
   May be used in sections :   defaults | frontend | listen | backend
-                                 yes   |    no    |   yes  |   yes
+                                 yes   |    yes   |   yes  |   yes
   Arguments:
     <name>    is an optional name to be reported. If unspecified, the
               node name from global section is automatically used instead.
@@ -5907,7 +6378,7 @@ stats show-node [ <name> ]
 stats uri <prefix>
   Enable statistics and define the URI prefix to access them
   May be used in sections :   defaults | frontend | listen | backend
-                                 yes   |    no    |   yes  |   yes
+                                 yes   |    yes   |   yes  |   yes
   Arguments :
     <prefix>  is the prefix of any URI which will be redirected to stats. This
               prefix may contain a question mark ('?') to indicate part of a
@@ -6125,7 +6596,12 @@ stick store-request <pattern> [table <table>] [{if | unless} <condition>]
   request or the response, regardless of the number of rules. Only the 8 first
   ones which match will be kept. Using this, it is possible to feed multiple
   tables at once in the hope to increase the chance to recognize a user on
-  another protocol or access method.
+  another protocol or access method. Using multiple store-request rules with
+  the same table is possible and may be used to find the best criterion to rely
+  on, by arranging the rules by decreasing preference order. Only the first
+  extracted criterion for a given table will be stored. All subsequent store-
+  request rules referencing the same table will be skipped and their ACLs will
+  not be evaluated.
 
   The "store-request" rules are evaluated once the server connection has been
   established, so that the table will contain the real server that processed
@@ -6160,7 +6636,7 @@ stick store-request <pattern> [table <table>] [{if | unless} <condition>]
 stick-table type {ip | integer | string [len <length>] | binary [len <length>]}
             size <size> [expire <expire>] [nopurge] [peers <peersect>]
             [store <data_type>]*
-  Configure the stickiness table for the current backend
+  Configure the stickiness table for the current section
   May be used in sections :   defaults | frontend | listen | backend
                                  no    |    yes   |   yes  |   yes
 
@@ -6429,7 +6905,15 @@ stick store-response <pattern> [table <table>] [{if | unless} <condition>]
   request or the response, regardless of the number of rules. Only the 8 first
   ones which match will be kept. Using this, it is possible to feed multiple
   tables at once in the hope to increase the chance to recognize a user on
-  another protocol or access method.
+  another protocol or access method. Using multiple store-response rules with
+  the same table is possible and may be used to find the best criterion to rely
+  on, by arranging the rules by decreasing preference order. Only the first
+  extracted criterion for a given table will be stored. All subsequent store-
+  response rules referencing the same table will be skipped and their ACLs will
+  not be evaluated. However, even if a store-request rule references a table, a
+  store-response rule may also use the same table. This means that each table
+  may learn exactly one element from the request and one element from the
+  response at once.
 
   The table will contain the real server that processed the request.
 
@@ -6466,6 +6950,187 @@ stick store-response <pattern> [table <table>] [{if | unless} <condition>]
 
   See also : "stick-table", "stick on", and section 7 about ACLs and pattern
              extraction.
+
+
+tcp-check connect [params*]
+  Opens a new connection
+  May be used in sections:   defaults | frontend | listen | backend
+                               no     |    no    |   yes  |   yes
+
+  When an application lies on more than a single TCP port or when HAProxy
+  load-balance many services in a single backend, it makes sense to probe all
+  the services individually before considering a server as operational.
+
+  When there are no TCP port configured on the server line neither server port
+  directive, then the 'tcp-check connect port <port>' must be the first step
+  of the sequence.
+
+  In a tcp-check ruleset a 'connect' is required, it is also mandatory to start
+  the ruleset with a 'connect' rule. Purpose is to ensure admin know what they
+  do.
+
+  Parameters :
+    They are optional and can be used to describe how HAProxy should open and
+    use the TCP connection.
+
+    port      if not set, check port or server port is used.
+              It tells HAProxy where to open the connection to.
+              <port> must be a valid TCP port source integer, from 1 to 65535.
+
+    send-proxy   send a PROXY protocol string
+
+    ssl          opens a ciphered connection
+
+    Examples:
+         # check HTTP and HTTPs services on a server.
+         # first open port 80 thanks to server line port directive, then
+         # tcp-check opens port 443, ciphered and run a request on it:
+         option tcp-check
+         tcp-check connect
+         tcp-check send GET\ /\ HTTP/1.0\r\n
+         tcp-check send Host:\ haproxy.1wt.eu\r\n
+         tcp-check send \r\n
+         tcp-check expect rstring (2..|3..)
+         tcp-check connect port 443 ssl
+         tcp-check send GET\ /\ HTTP/1.0\r\n
+         tcp-check send Host:\ haproxy.1wt.eu\r\n
+         tcp-check send \r\n
+         tcp-check expect rstring (2..|3..)
+         server www 10.0.0.1 check port 80
+
+         # check both POP and IMAP from a single server:
+         option tcp-check
+         tcp-check connect port 110
+         tcp-check expect string +OK\ POP3\ ready
+         tcp-check connect port 143
+         tcp-check expect string *\ OK\ IMAP4\ ready
+         server mail 10.0.0.1 check
+
+  See also : "option tcp-check", "tcp-check send", "tcp-check expect"
+
+
+tcp-check expect [!] <match> <pattern>
+  Specify data to be collected and analysed during a generic health check
+  May be used in sections:   defaults | frontend | listen | backend
+                               no     |    no    |   yes  |   yes
+
+  Arguments :
+    <match>   is a keyword indicating how to look for a specific pattern in the
+              response. The keyword may be one of "string", "rstring" or
+              binary.
+              The keyword may be preceded by an exclamation mark ("!") to negate
+              the match. Spaces are allowed between the exclamation mark and the
+              keyword. See below for more details on the supported keywords.
+
+    <pattern> is the pattern to look for. It may be a string or a regular
+              expression. If the pattern contains spaces, they must be escaped
+              with the usual backslash ('\').
+              If the match is set to binary, then the pattern must be passed as
+              a serie of hexadecimal digits in an even number. Each sequence of
+              two digits will represent a byte. The hexadecimal digits may be
+              used upper or lower case.
+
+
+  The available matches are intentionally similar to their http-check cousins :
+
+    string <string> : test the exact string matches in the response buffer.
+                      A health check response will be considered valid if the
+                      response's buffer contains this exact string. If the
+                      "string" keyword is prefixed with "!", then the response
+                      will be considered invalid if the body contains this
+                      string. This can be used to look for a mandatory pattern
+                      in a protocol response, or to detect a failure when a
+                      specific error appears in a protocol banner.
+
+    rstring <regex> : test a regular expression on the response buffer.
+                      A health check response will be considered valid if the
+                      response's buffer matches this expression. If the
+                      "rstring" keyword is prefixed with "!", then the response
+                      will be considered invalid if the body matches the
+                      expression.
+
+    binary <hexstring> : test the exact string in its hexadecimal form matches
+                         in the response buffer. A health check response will
+                         be considered valid if the response's buffer contains
+                         this exact hexadecimal string.
+                         Purpose is to match data on binary protocols.
+
+  It is important to note that the responses will be limited to a certain size
+  defined by the global "tune.chksize" option, which defaults to 16384 bytes.
+  Thus, too large responses may not contain the mandatory pattern when using
+  "string", "rstring" or binary. If a large response is absolutely required, it
+  is possible to change the default max size by setting the global variable.
+  However, it is worth keeping in mind that parsing very large responses can
+  waste some CPU cycles, especially when regular expressions are used, and that
+  it is always better to focus the checks on smaller resources. Also, in its
+  current state, the check will not find any string nor regex past a null
+  character in the response. Similarly it is not possible to request matching
+  the null character.
+
+  Examples :
+         # perform a POP check
+         option tcp-check
+         tcp-check expect string +OK\ POP3\ ready
+
+         # perform an IMAP check
+         option tcp-check
+         tcp-check expect string *\ OK\ IMAP4\ ready
+
+         # look for the redis master server
+         option tcp-check
+         tcp-check send PING\r\n
+         tcp-check expect +PONG
+         tcp-check send info\ replication\r\n
+         tcp-check expect string role:master
+         tcp-check send QUIT\r\n
+         tcp-check expect string +OK
+
+
+  See also : "option tcp-check", "tcp-check connect", "tcp-check send",
+             "tcp-check send-binary", "http-check expect", tune.chksize
+
+
+tcp-check send <data>
+  Specify a string to be sent as a question during a generic health check
+  May be used in sections:   defaults | frontend | listen | backend
+                               no     |    no    |   yes  |   yes
+
+    <data> : the data to be sent as a question during a generic health check
+             session. For now, <data> must be a string.
+
+  Examples :
+         # look for the redis master server
+         option tcp-check
+         tcp-check send info\ replication\r\n
+         tcp-check expect string role:master
+
+  See also : "option tcp-check", "tcp-check connect", "tcp-check expect",
+             "tcp-check send-binary", tune.chksize
+
+
+tcp-check send-binary <hexastring>
+  Specify an hexa digits string to be sent as a binary question during a raw
+  tcp health check
+  May be used in sections:   defaults | frontend | listen | backend
+                               no     |    no    |   yes  |   yes
+
+    <data> : the data to be sent as a question during a generic health check
+             session. For now, <data> must be a string.
+    <hexastring> : test the exact string in its hexadecimal form matches in the
+                   response buffer. A health check response will be considered
+                   valid if the response's buffer contains this exact
+                   hexadecimal string.
+                   Purpose is to send binary data to ask on binary protocols.
+
+  Examples :
+         # redis check in binary
+         option tcp-check
+         tcp-check send-binary 50494e470d0a # PING\r\n
+         tcp-check expect binary 2b504F4e47 # +PONG
+
+
+  See also : "option tcp-check", "tcp-check connect", "tcp-check expect",
+             "tcp-check send", tune.chksize
 
 
 tcp-request connection <action> [{if | unless} <condition>]
@@ -6615,11 +7280,14 @@ tcp-request content <action> [{if | unless} <condition>]
   is that "tcp-request content" rules can make use of contents to take a
   decision. Most often, these decisions will consider a protocol recognition or
   validity. The second difference is that content-based rules can be used in
-  both frontends and backends. In frontends, they will be evaluated upon new
-  connections. In backends, they will be evaluated once a session is assigned
-  a backend. This means that a single frontend connection may be evaluated
-  several times by one or multiple backends when a session gets reassigned
-  (for instance after a client-side HTTP keep-alive request).
+  both frontends and backends. In case of HTTP keep-alive with the client, all
+  tcp-request content rules are evaluated again, so haproxy keeps a record of
+  what sticky counters were assigned by a "tcp-request connection" versus a
+  "tcp-request content" rule, and flushes all the content-related ones after
+  processing an HTTP request, so that they may be evaluated again by the rules
+  being evaluated again for the next request. This is of particular importance
+  when the rule tracks some L7 information or when it is conditioned by an
+  L7-based ACL, since tracking may change between requests.
 
   Content-based rules are evaluated in their exact declaration order. If no
   rule matches or if there is no rule, the default action is to accept the
@@ -6634,16 +7302,12 @@ tcp-request content <action> [{if | unless} <condition>]
   They have the same meaning as their counter-parts in "tcp-request connection"
   so please refer to that section for a complete description.
 
-  Also, it is worth noting that if sticky counters are tracked from a rule
-  defined in a backend, this tracking will automatically end when the session
-  releases the backend. That allows per-backend counter tracking even in case
-  of HTTP keep-alive requests when the backend changes. This makes a subtle
-  difference because tracking rules in "frontend" and "listen" section last for
-  all the session, as opposed to the backend rules. The difference appears when
-  some layer 7 information is tracked. While there is nothing mandatory about
-  it, it is recommended to use the track-sc0 pointer to track per-frontend
-  counters and track-sc1 to track per-backend counters, but this is just a
-  guideline and all counters may be used everywhere.
+  While there is nothing mandatory about it, it is recommended to use the
+  track-sc0 in "tcp-request connection" rules, track-sc1 for "tcp-request
+  content" rules in the frontend, and track-sc2 for "tcp-request content"
+  rules in the backend, because that makes the configuration more readable
+  and easier to troubleshoot, but this is just a guideline and all counters
+  may be used everywhere.
 
   Note that the "if/unless" condition is optional. If no condition is set on
   the action, it is simply performed unconditionally. That can be useful for
@@ -6654,7 +7318,9 @@ tcp-request content <action> [{if | unless} <condition>]
   contents of a buffer before extracting the required data. If the buffered
   contents do not parse as a valid HTTP message, then the ACL does not match.
   The parser which is involved there is exactly the same as for all other HTTP
-  processing, so there is no risk of parsing something differently.
+  processing, so there is no risk of parsing something differently. In an HTTP
+  backend connected to from an HTTP frontend, it is guaranteed that HTTP
+  contents will always be immediately present when the rule is evaluated first.
 
   Tracking layer7 information is also possible provided that the information
   are present when the rule is processed. The current solution for making the
@@ -6800,7 +7466,7 @@ tcp-response content <action> [{if | unless} <condition>]
         this action is to force a connection to be finished between a client
         and a server after an exchange when the application protocol expects
         some long time outs to elapse first. The goal is to eliminate idle
-        connections which take signifiant resources on servers with certain
+        connections which take significant resources on servers with certain
         protocols.
 
     - reject :
@@ -6891,7 +7557,8 @@ timeout clitimeout <timeout> (deprecated)
   losses by specifying timeouts that are slightly above multiples of 3 seconds
   (eg: 4 or 5 seconds). If some long-lived sessions are mixed with short-lived
   sessions (eg: WebSocket and HTTP), it's worth considering "timeout tunnel",
-  which overrides "timeout client" and "timeout server" for tunnels.
+  which overrides "timeout client" and "timeout server" for tunnels, as well as
+  "timeout client-fin" for half-closed connections.
 
   This parameter is specific to frontends, but can be specified once for all in
   "defaults" sections. This is in fact one of the easiest solutions not to
@@ -6905,6 +7572,31 @@ timeout clitimeout <timeout> (deprecated)
   provided only by backwards compatibility but its use is strongly discouraged.
 
   See also : "clitimeout", "timeout server", "timeout tunnel".
+
+
+timeout client-fin <timeout>
+  Set the inactivity timeout on the client side for half-closed connections.
+  May be used in sections :   defaults | frontend | listen | backend
+                                 yes   |    yes   |   yes  |   no
+  Arguments :
+    <timeout> is the timeout value specified in milliseconds by default, but
+              can be in any other unit if the number is suffixed by the unit,
+              as explained at the top of this document.
+
+  The inactivity timeout applies when the client is expected to acknowledge or
+  send data while one direction is already shut down. This timeout is different
+  from "timeout client" in that it only applies to connections which are closed
+  in one direction. This is particularly useful to avoid keeping connections in
+  FIN_WAIT state for too long when clients do not disconnect cleanly. This
+  problem is particularly common long connections such as RDP or WebSocket.
+  Note that this timeout can override "timeout tunnel" when a connection shuts
+  down in one direction.
+
+  This parameter is specific to frontends, but can be specified once for all in
+  "defaults" sections. By default it is not set, so half-closed connections
+  will use the other timeouts (timeout.client or timeout.tunnel).
+
+  See also : "timeout client", "timeout server-fin", and "timeout tunnel".
 
 
 timeout connect <timeout>
@@ -7084,6 +7776,32 @@ timeout srvtimeout <timeout> (deprecated)
   See also : "srvtimeout", "timeout client" and "timeout tunnel".
 
 
+timeout server-fin <timeout>
+  Set the inactivity timeout on the server side for half-closed connections.
+  May be used in sections :   defaults | frontend | listen | backend
+                                 yes   |    no    |   yes  |   yes
+  Arguments :
+    <timeout> is the timeout value specified in milliseconds by default, but
+              can be in any other unit if the number is suffixed by the unit,
+              as explained at the top of this document.
+
+  The inactivity timeout applies when the server is expected to acknowledge or
+  send data while one direction is already shut down. This timeout is different
+  from "timeout server" in that it only applies to connections which are closed
+  in one direction. This is particularly useful to avoid keeping connections in
+  FIN_WAIT state for too long when a remote server does not disconnect cleanly.
+  This problem is particularly common long connections such as RDP or WebSocket.
+  Note that this timeout can override "timeout tunnel" when a connection shuts
+  down in one direction. This setting was provided for completeness, but in most
+  situations, it should not be needed.
+
+  This parameter is specific to backends, but can be specified once for all in
+  "defaults" sections. By default it is not set, so half-closed connections
+  will use the other timeouts (timeout.server or timeout.tunnel).
+
+  See also : "timeout client-fin", "timeout server", and "timeout tunnel".
+
+
 timeout tarpit <timeout>
   Set the duration for which tarpitted connections will be maintained
   May be used in sections :   defaults | frontend | listen | backend
@@ -7125,6 +7843,14 @@ timeout tunnel <timeout>
   to a proxy), or after the first response when no keepalive/close option is
   specified.
 
+  Since this timeout is usually used in conjunction with long-lived connections,
+  it usually is a good idea to also set "timeout client-fin" to handle the
+  situation where a client suddenly disappears from the net and does not
+  acknowledge a close, or sends a shutdown and does not acknowledge pending
+  data anymore. This can happen in lossy networks where firewalls are present,
+  and is detected by the presence of large amounts of sessions in a FIN_WAIT
+  state.
+
   The value is specified in milliseconds by default, but can be in any other
   unit if the number is suffixed by the unit, as specified at the top of this
   document. Whatever the expected normal idle time, it is a good practice to
@@ -7140,11 +7866,11 @@ timeout tunnel <timeout>
             option http-server-close
             timeout connect 5s
             timeout client 30s
-            timeout client 30s
+            timeout client-fin 30s
             timeout server 30s
             timeout tunnel  1h    # timeout to use with WebSocket and CONNECT
 
-  See also : "timeout client", "timeout server".
+  See also : "timeout client", "timeout client-fin", "timeout server".
 
 
 transparent (deprecated)
@@ -7195,7 +7921,7 @@ unique-id-format <string>
 
   Example:
 
-        unique-id-format %{+X}o\ %Ci:%Cp_%Fi:%Fp_%Ts_%rt:%pid
+        unique-id-format %{+X}o\ %ci:%cp_%fi:%fp_%Ts_%rt:%pid
 
         will generate:
 
@@ -7215,7 +7941,7 @@ unique-id-header <name>
 
   Example:
 
-        unique-id-format %{+X}o\ %Ci:%Cp_%Fi:%Fp_%Ts_%rt:%pid
+        unique-id-format %{+X}o\ %ci:%cp_%fi:%fp_%Ts_%rt:%pid
         unique-id-header X-Unique-ID
 
         will generate:
@@ -7224,15 +7950,16 @@ unique-id-header <name>
 
     See also: "unique-id-format"
 
-use_backend <backend> if <condition>
-use_backend <backend> unless <condition>
+use_backend <backend> [{if | unless} <condition>]
   Switch to a specific backend if/unless an ACL-based condition is matched.
   May be used in sections :   defaults | frontend | listen | backend
                                   no   |    yes   |   yes  |   no
   Arguments :
-    <backend>   is the name of a valid backend or "listen" section.
+    <backend>   is the name of a valid backend or "listen" section, or a
+                "log-format" string resolving to a backend name.
 
-    <condition> is a condition composed of ACLs, as described in section 7.
+    <condition> is a condition composed of ACLs, as described in section 7. If
+                it is omitted, the rule is unconditionally applied.
 
   When doing content-switching, connections arrive on a frontend and are then
   dispatched to various backends depending on a number of conditions. The
@@ -7259,7 +7986,22 @@ use_backend <backend> unless <condition>
   a complete HTTP request to get in. This feature is useful when a frontend
   must decode several protocols on a unique port, one of them being HTTP.
 
-  See also: "default_backend", "tcp-request", and section 7 about ACLs.
+  When <backend> is a simple name, it is resolved at configuration time, and an
+  error is reported if the specified backend does not exist. If <backend> is
+  a log-format string instead, no check may be done at configuration time, so
+  the backend name is resolved dynamically at run time. If the resulting
+  backend name does not correspond to any valid backend, no other rule is
+  evaluated, and the default_backend directive is applied instead. Note that
+  when using dynamic backend names, it is highly recommended to use a prefix
+  that no other backend uses in order to ensure that an unauthorized backend
+  cannot be forced from the request.
+
+  It is worth mentioning that "use_backend" rules with an explicit name are
+  used to detect the association between frontends and backends to compute the
+  backend's "fullconn" setting. This cannot be done for dynamic names.
+
+  See also: "default_backend", "tcp-request", "fullconn", "log-format", and
+            section 7 about ACLs.
 
 
 use-server <server> if <condition>
@@ -7313,7 +8055,7 @@ use-server <server> unless <condition>
      # all the rest is forwarded to this server
      server  default 192.168.0.2:443 check
 
-  See also: "use_backend", serction 5 about server and section 7 about ACLs.
+  See also: "use_backend", section 5 about server and section 7 about ACLs.
 
 
 5. Bind and Server options
@@ -7382,7 +8124,7 @@ ca-ignore-err [all|<errorID>,...]
 ciphers <ciphers>
   This setting is only available when support for OpenSSL was built in. It sets
   the string describing the list of cipher algorithms ("cipher suite") that are
-  negociated during the SSL/TLS handshake. The format of the string is defined
+  negotiated during the SSL/TLS handshake. The format of the string is defined
   in "man 1 ciphers" from OpenSSL man pages, and can be for instance a string
   such as "AES:ALL:!aNULL:!eNULL:+RC4:@STRENGTH" (without quotes).
 
@@ -7421,7 +8163,7 @@ crt <cert>
 
   Some CAs (such as Godaddy) offer a drop down list of server types that do not
   include HAProxy when obtaining a certificate. If this happens be sure to
-  choose a webserver that the CA believes requires a intermediate CA (for
+  choose a webserver that the CA believes requires an intermediate CA (for
   Godaddy, selection Apache Tomcat will get the correct bundle, but many
   others, e.g. nginx, result in a wrong bundle that will not work for some
   clients).
@@ -7429,7 +8171,7 @@ crt <cert>
 crt-ignore-err <errors>
   This setting is only available when support for OpenSSL was built in. Sets a
   comma separated list of errorIDs to ignore during verify at depth == 0.  If
-  set to 'all', all errors are ignored. SSL handshake is not abored if an error
+  set to 'all', all errors are ignored. SSL handshake is not aborted if an error
   is ignored.
 
 crt-list <file>
@@ -7462,20 +8204,20 @@ defer-accept
   option is only supported on TCPv4/TCPv6 sockets and ignored by other ones.
 
 force-sslv3
-  This option enforces use of SSLv3 only on SSL connections instanciated from
+  This option enforces use of SSLv3 only on SSL connections instantiated from
   this listener. SSLv3 is generally less expensive than the TLS counterparts
   for high connection rates. See also "force-tls*", "no-sslv3", and "no-tls*".
 
 force-tlsv10
-  This option enforces use of TLSv1.0 only on SSL connections instanciated from
+  This option enforces use of TLSv1.0 only on SSL connections instantiated from
   this listener. See also "force-tls*", "no-sslv3", and "no-tls*".
 
 force-tlsv11
-  This option enforces use of TLSv1.1 only on SSL connections instanciated from
+  This option enforces use of TLSv1.1 only on SSL connections instantiated from
   this listener. See also "force-tls*", "no-sslv3", and "no-tls*".
 
 force-tlsv12
-  This option enforces use of TLSv1.2 only on SSL connections instanciated from
+  This option enforces use of TLSv1.2 only on SSL connections instantiated from
   this listener. See also "force-tls*", "no-sslv3", and "no-tls*".
 
 gid <gid>
@@ -7567,7 +8309,7 @@ nice <nice>
 
 no-sslv3
   This setting is only available when support for OpenSSL was built in. It
-  disables support for SSLv3 on any sockets instanciated from the listener when
+  disables support for SSLv3 on any sockets instantiated from the listener when
   SSL is supported. Note that SSLv2 is forced disabled in the code and cannot
   be enabled using any configuration option. See also "force-tls*",
   and "force-sslv3".
@@ -7580,21 +8322,21 @@ no-tls-tickets
 
 no-tlsv10
   This setting is only available when support for OpenSSL was built in. It
-  disables support for TLSv1.0 on any sockets instanciated from the listener
+  disables support for TLSv1.0 on any sockets instantiated from the listener
   when SSL is supported. Note that SSLv2 is forced disabled in the code and
   cannot be enabled using any configuration option. See also "force-tls*",
   and "force-sslv3".
 
 no-tlsv11
   This setting is only available when support for OpenSSL was built in. It
-  disables support for TLSv1.1 on any sockets instanciated from the listener
+  disables support for TLSv1.1 on any sockets instantiated from the listener
   when SSL is supported. Note that SSLv2 is forced disabled in the code and
   cannot be enabled using any configuration option. See also "force-tls*",
   and "force-sslv3".
 
 no-tlsv12
   This setting is only available when support for OpenSSL was built in. It
-  disables support for TLSv1.2 on any sockets instanciated from the listener
+  disables support for TLSv1.2 on any sockets instantiated from the listener
   when SSL is supported. Note that SSLv2 is forced disabled in the code and
   cannot be enabled using any configuration option. See also "force-tls*",
   and "force-sslv3".
@@ -7607,9 +8349,25 @@ npn <protocols>
   enabled (check with haproxy -vv). Note that the NPN extension has been
   replaced with the ALPN extension (see the "alpn" keyword).
 
+process [ all | odd | even | <number 1-64>[-<number 1-64>] ]
+  This restricts the list of processes on which this listener is allowed to
+  run. It does not enforce any process but eliminates those which do not match.
+  If the frontend uses a "bind-process" setting, the intersection between the
+  two is applied. If in the end the listener is not allowed to run on any
+  remaining process, a warning is emitted, and the listener will either run on
+  the first process of the listener if a single process was specified, or on
+  all of its processes if multiple processes were specified. For the unlikely
+  case where several ranges are needed, this directive may be repeated. The
+  main purpose of this directive is to be used with the stats sockets and have
+  one different socket per process. The second purpose is to have multiple bind
+  lines sharing the same IP:port but not the same process in a listener, so
+  that the system can distribute the incoming connections into multiple queues
+  and allow a smoother inter-process load balancing. Currently Linux 3.9 and
+  above is known for supporting this. See also "bind-process" and "nbproc".
+
 ssl
   This setting is only available when support for OpenSSL was built in. It
-  enables SSL deciphering on connections instanciated from this listener. A
+  enables SSL deciphering on connections instantiated from this listener. A
   certificate is necessary (see "crt" above). All contents in the buffers will
   appear in clear text, so that ACLs and HTTP processing will only have access
   to deciphered contents.
@@ -7650,7 +8408,7 @@ v4v6
   including Linux kernels >= 2.4.21. It is used to bind a socket to both IPv4
   and IPv6 when it uses the default address. Doing so is sometimes necessary
   on systems which bind to IPv6 only by default. It has no effect on non-IPv6
-  sockets, and is overriden by the "v6only" option.
+  sockets, and is overridden by the "v6only" option.
 
 v6only
   Is an optional keyword which is supported only on most recent systems
@@ -7709,6 +8467,70 @@ addr <ipv4|ipv6>
 
   Supported in default-server: No
 
+agent-check
+  Enable an auxiliary agent check which is run independently of a regular
+  health check. An agent health check is performed by making a TCP
+  connection to the port set by the "agent-port" parameter" and reading
+  an ASCII string. The string should have one of the following forms:
+
+  * An ASCII representation of an positive integer percentage.
+    e.g. "75%"
+
+    Values in this format will set the weight proportional to the initial
+    weight of a server as configured when haproxy starts.
+
+  * The string "drain".
+
+    This will cause the weight of a server to be set to 0, and thus it will
+    not accept any new connections other than those that are accepted via
+    persistence.
+
+  * The string "down", optionally followed by a description string.
+
+    Mark the server as down and log the description string as the reason.
+
+  * The string "stopped", optionally followed by a description string.
+
+    This currently has the same behaviour as "down".
+
+  * The string "fail", optionally followed by a description string.
+
+    This currently has the same behaviour as "down".
+
+  Failure to connect to the agent is not considered an error as connectivity
+  is tested by the regular health check which is enabled by the "check"
+  parameter.
+
+  Requires the ""agent-port" parameter to be set.
+  See also the "agent-check" parameter.
+
+  Supported in default-server: No
+
+agent-inter <delay>
+  The "agent-inter" parameter sets the interval between two agent checks
+  to <delay> milliseconds. If left unspecified, the delay defaults to 2000 ms.
+
+  Just as with every other time-based parameter, it may be entered in any
+  other explicit unit among { us, ms, s, m, h, d }. The "agent-inter"
+  parameter also serves as a timeout for agent checks "timeout check" is
+  not set. In order to reduce "resonance" effects when multiple servers are
+  hosted on the same hardware, the agent and health checks of all servers
+  are started with a small time offset between them. It is also possible to
+  add some random noise in the agent and health checks interval using the
+  global "spread-checks" keyword. This makes sense for instance when a lot
+  of backends use the same servers.
+
+  See also the "agent-check" and "agent-port" parameters.
+
+  Supported in default-server: Yes
+
+agent-port <port>
+  The "agent-port" parameter sets the TCP port used for agent checks.
+
+  See also the "agent-check" and "agent-inter" parameters.
+
+  Supported in default-server: Yes
+
 backup
   When "backup" is present on a server line, the server is only used in load
   balancing when all other non-backup servers are unavailable. Requests coming
@@ -7735,10 +8557,9 @@ check
   backend. It is possible to change the address using the "addr" parameter, the
   port using the "port" parameter, the source address using the "source"
   address, and the interval and timers using the "inter", "rise" and "fall"
-  parameters. The request method is define in the backend using the
-  "httpchk", "lb-agent-chk", "smtpchk", "mysql-check", "pgsql-check" and
-  "ssl-hello-chk" options. Please refer to those options and parameters for
-  more information.
+  parameters. The request method is define in the backend using the "httpchk",
+  "smtpchk", "mysql-check", "pgsql-check" and "ssl-hello-chk" options. Please
+  refer to those options and parameters for more information.
 
   Supported in default-server: No
 
@@ -7758,7 +8579,7 @@ check-ssl
   whether the server uses SSL or not for the normal traffic. This is generally
   used when an explicit "port" or "addr" directive is specified and SSL health
   checks are not inherited. It is important to understand that this option
-  inserts an SSL transport layer below the ckecks, so that a simple TCP connect
+  inserts an SSL transport layer below the checks, so that a simple TCP connect
   check becomes an SSL connect, which replaces the old ssl-hello-chk. The most
   common use is to send HTTPS checks by combining "httpchk" with SSL checks.
   All SSL settings are common to health checks and traffic (eg: ciphers).
@@ -7768,7 +8589,7 @@ check-ssl
 
 ciphers <ciphers>
   This option sets the string describing the list of cipher algorithms that is
-  is negociated during the SSL/TLS handshake with the server. The format of the
+  is negotiated during the SSL/TLS handshake with the server. The format of the
   string is defined in "man 1 ciphers". When SSL is used to communicate with
   servers on the local network, it is common to see a weaker set of algorithms
   than what is used over the internet. Doing so reduces CPU usage on both the
@@ -7885,11 +8706,11 @@ downinter <delay>
   other explicit unit among { us, ms, s, m, h, d }. The "inter" parameter also
   serves as a timeout for health checks sent to servers if "timeout check" is
   not set. In order to reduce "resonance" effects when multiple servers are
-  hosted on the same hardware, the health-checks of all servers are started
-  with a small time offset between them. It is also possible to add some random
-  noise in the health checks interval using the global "spread-checks"
-  keyword. This makes sense for instance when a lot of backends use the same
-  servers.
+  hosted on the same hardware, the agent and health checks of all servers
+  are started with a small time offset between them. It is also possible to
+  add some random noise in the agent and health checks interval using the
+  global "spread-checks" keyword. This makes sense for instance when a lot
+  of backends use the same servers.
 
   Supported in default-server: Yes
 
@@ -8090,6 +8911,42 @@ send-proxy
 
   Supported in default-server: No
 
+send-proxy-v2
+  The "send-proxy-v2" parameter enforces use of the PROXY protocol version 2
+  over any connection established to this server. The PROXY protocol informs
+  the other end about the layer 3/4 addresses of the incoming connection, so
+  that it can know the client's address or the public address it accessed to,
+  whatever the upper layer protocol. This setting must not be used if the
+  server isn't aware of this version of the protocol. See also the "send-proxy"
+  option of the "bind" keyword.
+
+  Supported in default-server: No
+
+send-proxy-v2-ssl
+  The "send-proxy-v2-ssl" parameter enforces use of the PROXY protocol version
+  2 over any connection established to this server. The PROXY protocol informs
+  the other end about the layer 3/4 addresses of the incoming connection, so
+  that it can know the client's address or the public address it accessed to,
+  whatever the upper layer protocol. In addition, the SSL information extension
+  of the PROXY protocol is added to the PROXY protocol header. This setting
+  must not be used if the server isn't aware of this version of the protocol.
+  See also the "send-proxy-v2" option of the "bind" keyword.
+
+  Supported in default-server: No
+
+send-proxy-v2-ssl-cn
+  The "send-proxy-v2-ssl" parameter enforces use of the PROXY protocol version
+  2 over any connection established to this server. The PROXY protocol informs
+  the other end about the layer 3/4 addresses of the incoming connection, so
+  that it can know the client's address or the public address it accessed to,
+  whatever the upper layer protocol. In addition, the SSL information extension
+  of the PROXY protocol, along along with the Common Name from the subject of
+  the client certificate (if any), is added to the PROXY protocol header. This
+  setting must not be used if the server isn't aware of this version of the
+  protocol. See also the "send-proxy-v2" option of the "bind" keyword.
+
+  Supported in default-server: No
+
 slowstart <start_time_in_ms>
   The "slowstart" parameter for a server accepts a value in milliseconds which
   indicates after how long a server which has just come back up will run at
@@ -8137,7 +8994,7 @@ ssl
   the-middle attacks rendering SSL useless. When this option is used, health
   checks are automatically sent in SSL too unless there is a "port" or an
   "addr" directive indicating the check should be sent to a different location.
-  See the "check-ssl" optino to force SSL health checks.
+  See the "check-ssl" option to force SSL health checks.
 
   Supported in default-server: No
 
@@ -8152,9 +9009,10 @@ track [<proxy>/]<server>
 
 verify [none|required]
   This setting is only available when support for OpenSSL was built in. If set
-  to 'none', server certificate is not verified. This is the default. In the
-  other case, The certificate provided by the server is verified using CAs from
-  'ca-file' and optional CRLs from 'crl-file'. On verify failure the handshake
+  to 'none', server certificate is not verified. In the other case, The
+  certificate provided by the server is verified using CAs from 'ca-file'
+  and optional CRLs from 'crl-file'. If 'ssl_server_verify' is not specified
+  in global  section, this is the default. On verify failure the handshake
   is aborted. It is critically important to verify server certificates when
   using SSL to connect to servers, otherwise the communication is prone to
   trivial man-in-the-middle attacks rendering SSL totally useless.
@@ -8192,20 +9050,16 @@ In HTTP mode, it is possible to rewrite, add or delete some of the request and
 response headers based on regular expressions. It is also possible to block a
 request or a response if a particular header matches a regular expression,
 which is enough to stop most elementary protocol attacks, and to protect
-against information leak from the internal network. But there is a limitation
-to this : since HAProxy's HTTP engine does not support keep-alive, only headers
-passed during the first request of a TCP session will be seen. All subsequent
-headers will be considered data only and not analyzed. Furthermore, HAProxy
-never touches data contents, it stops analysis at the end of headers.
+against information leak from the internal network.
 
-There is an exception though. If HAProxy encounters an "Informational Response"
-(status code 1xx), it is able to process all rsp* rules which can allow, deny,
-rewrite or delete a header, but it will refuse to add a header to any such
-messages as this is not HTTP-compliant. The reason for still processing headers
-in such responses is to stop and/or fix any possible information leak which may
-happen, for instance because another downstream equipment would unconditionally
-add a header, or if a server name appears there. When such messages are seen,
-normal processing still occurs on the next non-informational messages.
+If HAProxy encounters an "Informational Response" (status code 1xx), it is able
+to process all rsp* rules which can allow, deny, rewrite or delete a header,
+but it will refuse to add a header to any such messages as this is not
+HTTP-compliant. The reason for still processing headers in such responses is to
+stop and/or fix any possible information leak which may happen, for instance
+because another downstream equipment would unconditionally add a header, or if
+a server name appears there. When such messages are seen, normal processing
+still occurs on the next non-informational messages.
 
 This section covers common usage of the following keywords, described in detail
 in section 4.2 :
@@ -8310,6 +9164,7 @@ from the request, the response or any environmental status. The principle is
 simple :
 
   - extract a data sample from a stream, table or the environment
+  - optionally apply some format conversion to the extracted sample
   - apply one or multiple pattern matching methods on this sample
   - perform actions only when a pattern matches the sample
 
@@ -8323,8 +9178,10 @@ In order to define a test, the "acl" keyword is used. The syntax is :
 This creates a new ACL <aclname> or completes an existing one with new tests.
 Those tests apply to the portion of request/response specified in <criterion>
 and may be adjusted with optional flags [flags]. Some criteria also support
-an operator which may be specified before the set of values. The values are
-of the type supported by the criterion, and are separated by spaces.
+an operator which may be specified before the set of values. Optionally some
+conversion operators may be applied to the sample, and they will be specified
+as a comma-delimited list of keywords just after the first keyword. The values
+are of the type supported by the criterion, and are separated by spaces.
 
 ACL names must be formed from upper and lower case letters, digits, '-' (dash),
 '_' (underscore) , '.' (dot) and ':' (colon). ACL names are case-sensitive,
@@ -8336,7 +9193,8 @@ performance, they just consume a small amount of memory.
 The criterion generally is the name of a sample fetch method, or one of its ACL
 specific declinations. The default test method is implied by the output type of
 this sample fetch method. The ACL declinations can describe alternate matching
-methods of a same sample fetch method.
+methods of a same sample fetch method. The sample fetch methods are the only
+ones supporting a conversion.
 
 Sample fetch methods return data which can be of the following types :
   - boolean
@@ -8344,6 +9202,35 @@ Sample fetch methods return data which can be of the following types :
   - IPv4 or IPv6 address
   - string
   - data block
+
+Converters transform any of these data into any of these. For example, some
+converters might convert a string to a lower-case string while other ones
+would turn a string to an IPv4 address, or apply a netmask to an IP address.
+The resulting sample is of the type of the last converter applied to the list,
+which defaults to the type of the sample fetch method.
+
+Each sample or converter returns data of a specific type, specified with its
+keyword in this documentation. When an ACL is declared using a standard sample
+fetch method, certain types automatically involved a default matching method
+which are summarized in the table below :
+
+   +---------------------+-----------------+
+   | Sample or converter | Default         |
+   |    output type      | matching method |
+   +---------------------+-----------------+
+   | boolean             | bool            |
+   +---------------------+-----------------+
+   | integer             | int             |
+   +---------------------+-----------------+
+   | ip                  | ip              |
+   +---------------------+-----------------+
+   | string              | str             |
+   +---------------------+-----------------+
+   | binary              | none, use "-m"  |
+   +---------------------+-----------------+
+
+Note that in order to match a binary samples, it is mandatory to specify a
+matching method, see below.
 
 The ACL engine can match these types against patterns of the following types :
   - boolean
@@ -8358,6 +9245,9 @@ The following ACL flags are currently supported :
    -i : ignore case during matching of all subsequent patterns.
    -f : load patterns from a file.
    -m : use a specific pattern matching method
+   -n : forbid the DNS resolutions
+   -M : load the file pointed by -f like a map file.
+   -u : force the unique id of the ACL
    -- : force end of flags. Useful when a string looks like one of the flags.
 
 The "-f" flag is followed by the name of a file from which all lines will be
@@ -8369,6 +9259,16 @@ beginning with a sharp, just prefix it with a space so that it is not taken for
 a comment. Depending on the data type and match method, haproxy may load the
 lines into a binary tree, allowing very fast lookups. This is true for IPv4 and
 exact string matching. In this case, duplicates will automatically be removed.
+
+The "-M" flag allows an ACL to use a map file. If this flag is set, the file is
+parsed as two column file. The first column contains the patterns used by the
+ACL, and the second column contain the samples. The sample can be used later by
+a map. This can be useful in some rare cases where an ACL would just be used to
+check for the existence of a pattern in a map before a mapping is applied.
+
+The "-u" flag forces the unique id of the ACL. This unique id is used with the
+socket interface to identify ACL and dynamically change its values. Note that a
+file is always identified by its name even if an id is set.
 
 Also, note that the "-i" flag applies to subsequent entries and not to entries
 loaded from files preceding it. For instance :
@@ -8390,6 +9290,15 @@ followed by a pattern matching method name, this method is used instead of the
 default one for the criterion. This makes it possible to match contents in ways
 that were not initially planned, or with sample fetch methods which return a
 string. The matching method also affects the way the patterns are parsed.
+
+The "-n" flag forbids the dns resolutions. It is used with the load of ip files.
+By default, if the parser cannot parse ip address it considers that the parsed
+string is maybe a domain name and try dns resolution. The flag "-n" disable this
+resolution. It is useful for detecting malformed ip lists. Note that if the DNS
+server is not reachable, the haproxy configuration parsing may last many minutes
+waiting fir the timeout. During this time no error messages are displayed. The
+flag "-n" disable this behavior. Note also that during the runtime, this
+function is disabled for the dynamic acl modifications.
 
 There are some restrictions however. Not all methods can be used with all
 sample fetch methods. Also, if "-m" is used in conjunction with "-f", it must
@@ -8452,6 +9361,11 @@ buffer, one would use the following acl :
 
     acl script_tag payload(0,500) -m reg -i <script>
 
+On systems where the regex library is much slower when using "-i", it is
+possible to convert the sample to lowercase before matching, like this :
+
+    acl script_tag payload(0,500),lower -m reg <script>
+
 All ACL-specific criteria imply a default matching method. Most often, these
 criteria are composed by concatenating the name of the original sample fetch
 method and the matching method. For example, "hdr_beg" applies the "beg" match
@@ -8460,8 +9374,8 @@ criteria rely on a sample fetch method, it is always possible instead to use
 the original sample fetch method and the explicit matching method using "-m".
 
 If an alternate match is specified using "-m" on an ACL-specific criterion,
-the mathing method is simply applied to the underlying sample fetch method. For
-example, all ACLs below are exact equivalent :
+the matching method is simply applied to the underlying sample fetch method.
+For example, all ACLs below are exact equivalent :
 
     acl short_form  hdr_beg(host)        www.
     acl alternate1  hdr_beg(host) -m beg www.
@@ -8469,39 +9383,40 @@ example, all ACLs below are exact equivalent :
     acl alternate3  hdr(host)     -m beg www.
 
 
-The table below summarizes the compatibility matrix between sample fetch types
-and the pattern types to fetch against. It indicates for each compatible
-combination the name of the matching method to be used, prefixed with "*" when
-the method is implicit and will work by default without "-m".
+The table below summarizes the compatibility matrix between sample or converter
+types and the pattern types to fetch against. It indicates for each compatible
+combination the name of the matching method to be used, surrounded with angle
+brackets ">" and "<" when the method is the default one and will work by
+default without "-m".
 
                            +-------------------------------------------------+
                            |                Input sample type                |
     +----------------------+---------+---------+---------+---------+---------+
-    |     pattern type     | boolean | integer |   IP    | string  | binary  |
+    |     pattern type     | boolean | integer |   ip    | string  | binary  |
     +----------------------+---------+---------+---------+---------+---------+
     | none (presence only) |  found  |  found  |  found  |  found  |  found  |
     +----------------------+---------+---------+---------+---------+---------+
-    | none (boolean value) |  *bool  |   bool  |         |         |         |
+    | none (boolean value) |>  bool <|   bool  |         |   bool  |         |
     +----------------------+---------+---------+---------+---------+---------+
-    | integer (value)      |   int   |   *int  |         |         |         |
+    | integer (value)      |   int   |>  int  <|   int   |   int   |         |
     +----------------------+---------+---------+---------+---------+---------+
-    | integer (length)     |         |         |         |   len   |   len   |
+    | integer (length)     |   len   |   len   |   len   |   len   |   len   |
     +----------------------+---------+---------+---------+---------+---------+
-    | IP address           |         |         |   *ip   |         |         |
+    | IP address           |         |         |>   ip  <|    ip   |    ip   |
     +----------------------+---------+---------+---------+---------+---------+
-    | exact string         |         |         |         |   str   |   str   |
+    | exact string         |   str   |   str   |   str   |>  str  <|   str   |
     +----------------------+---------+---------+---------+---------+---------+
-    | prefix               |         |         |         |   beg   |   beg   |
+    | prefix               |   beg   |   beg   |   beg   |   beg   |   beg   |
     +----------------------+---------+---------+---------+---------+---------+
-    | suffix               |         |         |         |   end   |   end   |
+    | suffix               |   end   |   end   |   end   |   end   |   end   |
     +----------------------+---------+---------+---------+---------+---------+
-    | substring            |         |         |         |   sub   |   sub   |
+    | substring            |   sub   |   sub   |   sub   |   sub   |   sub   |
     +----------------------+---------+---------+---------+---------+---------+
-    | subdir               |         |         |         |   dir   |   dir   |
+    | subdir               |   dir   |   dir   |   dir   |   dir   |   dir   |
     +----------------------+---------+---------+---------+---------+---------+
-    | domain               |         |         |         |   dom   |   dom   |
+    | domain               |   dom   |   dom   |   dom   |   dom   |   dom   |
     +----------------------+---------+---------+---------+---------+---------+
-    | regex                |         |         |         |   reg   |   reg   |
+    | regex                |   reg   |   reg   |   reg   |   reg   |   reg   |
     +----------------------+---------+---------+---------+---------+---------+
     | hex block            |         |         |         |   bin   |   bin   |
     +----------------------+---------+---------+---------+---------+---------+
@@ -8765,43 +9680,145 @@ Thus, the syntax of a standard sample fetch method is one of the following :
    - name(arg1)
    - name(arg1,arg2)
 
-At the moment, the stickiness features are the most advanced users of the
-sample fetch system. The "stick on", and "stick store-request" directives
-support sample fetch rules which allow a list of transformations to be applied
-on top of the fetched sample, and the finaly result is automatically converted
-to the type of the table. These transformations are enumerated as a series
-of specific keywords after the sample fetch method. These keywords may equally
-be appended immediately after the fetch keyword's argument, delimited by a
-comma. These keywords can also support some arguments (eg: a netmask) which
-must be passed in parenthesis.
+
+7.3.1. Converters
+-----------------
+
+Sample fetch methods may be combined with transformations to be applied on top
+of the fetched sample (also called "converters"). These combinations form what
+is called "sample expressions" and the result is a "sample". Initially this
+was only supported by "stick on" and "stick store-request" directives but this
+has now be extended to all places where samples may be used (acls, log-format,
+unique-id-format, add-header, ...).
+
+These transformations are enumerated as a series of specific keywords after the
+sample fetch method. These keywords may equally be appended immediately after
+the fetch keyword's argument, delimited by a comma. These keywords can also
+support some arguments (eg: a netmask) which must be passed in parenthesis.
 
 The currently available list of transformation keywords include :
 
-  lower          Convert a string sample to lower case. This can only be placed
-                 after a string sample fetch function or after a transformation
-                 keyword returning a string type. The result is of type string.
+base64
+  Converts a binary input sample to a base64 string. It is used to log or
+  transfer binary content in a way that can be reliably transferred (eg:
+  an SSL ID can be copied in a header).
 
-  upper          Convert a string sample to upper case. This can only be placed
-                 after a string sample fetch function or after a transformation
-                 keyword returning a string type. The result is of type string.
+lower
+  Convert a string sample to lower case. This can only be placed after a string
+  sample fetch function or after a transformation keyword returning a string
+  type. The result is of type string.
 
-  ipmask(<mask>) Apply a mask to an IPv4 address, and use the result for
-                 lookups and storage. This can be used to make all hosts within
-                 a certain mask to share the same table entries and as such use
-                 the same server. The mask can be passed in dotted form (eg:
-                 255.255.255.0) or in CIDR form (eg: 24).
+upper
+  Convert a string sample to upper case. This can only be placed after a string
+  sample fetch function or after a transformation keyword returning a string
+  type. The result is of type string.
 
-  http_date([<offset>])
-                 Converts an integer supposed to contain a date since epoch to
-                 a string representing this date in a format suitable for use
-                 in HTTP header fields. If an offset value is specified, then
-                 it is a number of seconds that is added to the date before the
-                 conversion is operated. This is particularly useful to emit
-                 Date header fields, Expires values in responses when combined
-                 with a positive offset, or Last-Modified values when the
-                 offset is negative.
+hex
+  Converts a binary input sample to an hex string containing two hex digits per
+  input byte. It is used to log or transfer hex dumps of some binary input data
+  in a way that can be reliably transferred (eg: an SSL ID can be copied in a
+  header).
 
-7.3.1. Fetching samples from internal states
+ipmask(<mask>)
+  Apply a mask to an IPv4 address, and use the result for lookups and storage.
+  This can be used to make all hosts within a certain mask to share the same
+  table entries and as such use the same server. The mask can be passed in
+  dotted form (eg: 255.255.255.0) or in CIDR form (eg: 24).
+
+http_date([<offset>])
+  Converts an integer supposed to contain a date since epoch to a string
+  representing this date in a format suitable for use in HTTP header fields. If
+  an offset value is specified, then it is a number of seconds that is added to
+  the date before the conversion is operated. This is particularly useful to
+  emit Date header fields, Expires values in responses when combined with a
+  positive offset, or Last-Modified values when the offset is negative.
+
+language(<value>[,<default>])
+  Returns the value with the highest q-factor from a list as extracted from the
+  "accept-language" header using "req.fhdr". Values with no q-factor have a
+  q-factor of 1. Values with a q-factor of 0 are dropped. Only values which
+  belong to the list of semi-colon delimited <values> will be considered. The
+  argument <value> syntax is "lang[;lang[;lang[;...]]]". If no value matches the
+  given list and a default value is provided, it is returned. Note that language
+  names may have a variant after a dash ('-'). If this variant is present in the
+  list, it will be matched, but if it is not, only the base language is checked.
+  The match is case-sensitive, and the output string is always one of those
+  provided in arguments.  The ordering of arguments is meaningless, only the
+  ordering of the values in the request counts, as the first value among
+  multiple sharing the same q-factor is used.
+
+  Example :
+
+    # this configuration switches to the backend matching a
+    # given language based on the request :
+
+    acl es req.fhdr(accept-language),language(es;fr;en) -m str es
+    acl fr req.fhdr(accept-language),language(es;fr;en) -m str fr
+    acl en req.fhdr(accept-language),language(es;fr;en) -m str en
+    use_backend spanish if es
+    use_backend french  if fr
+    use_backend english if en
+    default_backend choose_your_language
+
+map(<map_file>[,<default_value>])
+map_<match_type>(<map_file>[,<default_value>])
+map_<match_type>_<output_type>(<map_file>[,<default_value>])
+  Search the input value from <map_file> using the <match_type> matching method,
+  and return the associated value converted to the type <output_type>. If the
+  input value cannot be found in the <map_file>, the converter returns the
+  <default_value>. If the <default_value> is not set, the converter fails and
+  acts as if no input value could be fetched. If the <match_type> is not set, it
+  defaults to "str". Likewise, if the <output_type> is not set, it defaults to
+  "str". For convenience, the "map" keyword is an alias for "map_str" and maps a
+  string to another string.
+
+  It is important to avoid overlapping between the keys : IP addresses and
+  strings are stored in trees, so the first of the finest match will be used.
+  Other keys are stored in lists, so the first matching occurrence will be used.
+
+  The following array contains the list of all map functions avalaible sorted by
+  input type, match type and output type.
+
+  input type | match method | output type str | output type int | output type ip
+  -----------+--------------+-----------------+-----------------+---------------
+    str      | str          | map_str         | map_str_int     | map_str_ip
+  -----------+--------------+-----------------+-----------------+---------------
+    str      | beg          | map_beg         | map_beg_int     | map_end_ip
+  -----------+--------------+-----------------+-----------------+---------------
+    str      | sub          | map_sub         | map_sub_int     | map_sub_ip
+  -----------+--------------+-----------------+-----------------+---------------
+    str      | dir          | map_dir         | map_dir_int     | map_dir_ip
+  -----------+--------------+-----------------+-----------------+---------------
+    str      | dom          | map_dom         | map_dom_int     | map_dom_ip
+  -----------+--------------+-----------------+-----------------+---------------
+    str      | end          | map_end         | map_end_int     | map_end_ip
+  -----------+--------------+-----------------+-----------------+---------------
+    str      | reg          | map_reg         | map_reg_int     | map_reg_ip
+  -----------+--------------+-----------------+-----------------+---------------
+    int      | int          | map_int         | map_int_int     | map_int_ip
+  -----------+--------------+-----------------+-----------------+---------------
+    ip       | ip           | map_ip          | map_ip_int      | map_ip_ip
+  -----------+--------------+-----------------+-----------------+---------------
+
+  The file contains one key + value per line. Lines which start with '#' are
+  ignored, just like empty lines. Leading tabs and spaces are stripped. The key
+  is then the first "word" (series of non-space/tabs characters), and the value
+  is what follows this series of space/tab till the end of the line excluding
+  trailing spaces/tabs.
+
+  Example :
+
+     # this is a comment and is ignored
+        2.22.246.0/23    United Kingdom      \n
+     <-><-----------><--><------------><---->
+      |       |       |         |        `- trailing spaces ignored
+      |       |       |         `---------- value
+      |       |       `-------------------- middle spaces ignored
+      |       `---------------------------- key
+      `------------------------------------ leading spaces ignored
+
+
+7.3.2. Fetching samples from internal states
 --------------------------------------------
 
 A first set of sample fetch methods applies to internal information which does
@@ -8857,7 +9874,7 @@ be_sess_rate([<backend>]) : integer
 
 connslots([<backend>]) : integer
   Returns an integer value corresponding to the number of connection slots
-  still available in the backend, by totalizing the maximum amount of
+  still available in the backend, by totaling the maximum amount of
   connections on all servers and the maximum queue size. This is probably only
   used with ACLs.
 
@@ -8959,6 +9976,13 @@ queue([<backend>]) : integer
   possible action could be to reject new users but still accept old ones. See
   also the "avg_queue", "be_conn", and "be_sess_rate" fetches.
 
+rand([<range>]) : integer
+  Returns a random integer value within a range of <range> possible values,
+  starting at zero. If the range is not specified, it defaults to 2^32, which
+  gives numbers between 0 and 4294967295. It can be useful to pass some values
+  needed to take some routing decisions for example, or just for debugging
+  purposes. This random must not be used for security purposes.
+
 srv_conn([<backend>/]<server>) : integer
   Returns an integer value corresponding to the number of currently established
   connections on the designated server, possibly including the connection being
@@ -8980,7 +10004,7 @@ srv_is_up([<backend>/]<server>) : boolean
 srv_sess_rate([<backend>/]<server>) : integer
   Returns an integer corresponding to the sessions creation rate on the
   designated server, in number of new sessions per second. If <backend> is
-  omitted, then the server is looked up in the current backend. This is mosly
+  omitted, then the server is looked up in the current backend. This is mostly
   used with ACLs but can make sense with logs too. This is used to switch to an
   alternate backend when an expensive or fragile one reaches too high a session
   rate, or to limit abuse of service (eg. prevent latent requests from
@@ -9002,7 +10026,7 @@ table_cnt([<table>]) : integer
   table_avl for other entry counting methods.
 
 
-7.3.2. Fetching samples at Layer 4
+7.3.3. Fetching samples at Layer 4
 ----------------------------------
 
 The layer 4 usually describes just the transport layer which in haproxy is
@@ -9051,7 +10075,7 @@ fe_id : integer
   backends to check from which backend it was called, or to stick all users
   coming via a same frontend to the same server.
 
-sc_bytes_in_rate(<ctr>,[<table>]) : integer
+sc_bytes_in_rate(<ctr>[,<table>]) : integer
 sc0_bytes_in_rate([<table>]) : integer
 sc1_bytes_in_rate([<table>]) : integer
 sc2_bytes_in_rate([<table>]) : integer
@@ -9059,7 +10083,7 @@ sc2_bytes_in_rate([<table>]) : integer
   counters, measured in amount of bytes over the period configured in the
   table. See also src_bytes_in_rate.
 
-sc_bytes_out_rate(<ctr>,[<table>]) : integer
+sc_bytes_out_rate(<ctr>[,<table>]) : integer
 sc0_bytes_out_rate([<table>]) : integer
 sc1_bytes_out_rate([<table>]) : integer
 sc2_bytes_out_rate([<table>]) : integer
@@ -9067,7 +10091,7 @@ sc2_bytes_out_rate([<table>]) : integer
   counters, measured in amount of bytes over the period configured in the
   table. See also src_bytes_out_rate.
 
-sc_clr_gpc0(<ctr>,[<table>]) : integer
+sc_clr_gpc0(<ctr>[,<table>]) : integer
 sc0_clr_gpc0([<table>]) : integer
 sc1_clr_gpc0([<table>]) : integer
 sc2_clr_gpc0([<table>]) : integer
@@ -9085,14 +10109,14 @@ sc2_clr_gpc0([<table>]) : integer
         tcp-request connection accept if !abuse save
         tcp-request connection reject if abuse kill
 
-sc_conn_cnt(<ctr>,[<table>]) : integer
+sc_conn_cnt(<ctr>[,<table>]) : integer
 sc0_conn_cnt([<table>]) : integer
 sc1_conn_cnt([<table>]) : integer
 sc2_conn_cnt([<table>]) : integer
   Returns the cumulated number of incoming connections from currently tracked
   counters. See also src_conn_cnt.
 
-sc_conn_cur(<ctr>,[<table>]) : integer
+sc_conn_cur(<ctr>[,<table>]) : integer
 sc0_conn_cur([<table>]) : integer
 sc1_conn_cur([<table>]) : integer
 sc2_conn_cur([<table>]) : integer
@@ -9100,7 +10124,7 @@ sc2_conn_cur([<table>]) : integer
   tracked counters. This number is automatically incremented when tracking
   begins and decremented when tracking stops. See also src_conn_cur.
 
-sc_conn_rate(<ctr>,[<table>]) : integer
+sc_conn_rate(<ctr>[,<table>]) : integer
 sc0_conn_rate([<table>]) : integer
 sc1_conn_rate([<table>]) : integer
 sc2_conn_rate([<table>]) : integer
@@ -9108,14 +10132,14 @@ sc2_conn_rate([<table>]) : integer
   measured in amount of connections over the period configured in the table.
   See also src_conn_rate.
 
-sc_get_gpc0(<ctr>,[<table>]) : integer
+sc_get_gpc0(<ctr>[,<table>]) : integer
 sc0_get_gpc0([<table>]) : integer
 sc1_get_gpc0([<table>]) : integer
 sc2_get_gpc0([<table>]) : integer
   Returns the value of the first General Purpose Counter associated to the
   currently tracked counters. See also src_get_gpc0 and sc/sc0/sc1/sc2_inc_gpc0.
 
-sc_gpc0_rate(<ctr>,[<table>]) : integer
+sc_gpc0_rate(<ctr>[,<table>]) : integer
 sc0_gpc0_rate([<table>]) : integer
 sc1_gpc0_rate([<table>]) : integer
 sc2_gpc0_rate([<table>]) : integer
@@ -9126,7 +10150,7 @@ sc2_gpc0_rate([<table>]) : integer
   that the "gpc0_rate" counter must be stored in the stick-table for a value to
   be returned, as "gpc0" only holds the event count.
 
-sc_http_err_cnt(<ctr>,[<table>]) : integer
+sc_http_err_cnt(<ctr>[,<table>]) : integer
 sc0_http_err_cnt([<table>]) : integer
 sc1_http_err_cnt([<table>]) : integer
 sc2_http_err_cnt([<table>]) : integer
@@ -9134,7 +10158,7 @@ sc2_http_err_cnt([<table>]) : integer
   counters. This includes the both request errors and 4xx error responses.
   See also src_http_err_cnt.
 
-sc_http_err_rate(<ctr>,[<table>]) : integer
+sc_http_err_rate(<ctr>[,<table>]) : integer
 sc0_http_err_rate([<table>]) : integer
 sc1_http_err_rate([<table>]) : integer
 sc2_http_err_rate([<table>]) : integer
@@ -9143,7 +10167,7 @@ sc2_http_err_rate([<table>]) : integer
   includes the both request errors and 4xx error responses. See also
   src_http_err_rate.
 
-sc_http_req_cnt(<ctr>,[<table>]) : integer
+sc_http_req_cnt(<ctr>[,<table>]) : integer
 sc0_http_req_cnt([<table>]) : integer
 sc1_http_req_cnt([<table>]) : integer
 sc2_http_req_cnt([<table>]) : integer
@@ -9151,7 +10175,7 @@ sc2_http_req_cnt([<table>]) : integer
   counters. This includes every started request, valid or not. See also
   src_http_req_cnt.
 
-sc_http_req_rate(<ctr>,[<table>]) : integer
+sc_http_req_rate(<ctr>[,<table>]) : integer
 sc0_http_req_rate([<table>]) : integer
 sc1_http_req_rate([<table>]) : integer
 sc2_http_req_rate([<table>]) : integer
@@ -9160,7 +10184,7 @@ sc2_http_req_rate([<table>]) : integer
   the table. This includes every started request, valid or not. See also
   src_http_req_rate.
 
-sc_inc_gpc0(<ctr>,[<table>]) : integer
+sc_inc_gpc0(<ctr>[,<table>]) : integer
 sc0_inc_gpc0([<table>]) : integer
 sc1_inc_gpc0([<table>]) : integer
 sc2_inc_gpc0([<table>]) : integer
@@ -9174,7 +10198,7 @@ sc2_inc_gpc0([<table>]) : integer
         acl kill  sc0_inc_gpc0 gt 0
         tcp-request connection reject if abuse kill
 
-sc_kbytes_in(<ctr>,[<table>]) : integer
+sc_kbytes_in(<ctr>[,<table>]) : integer
 sc0_kbytes_in([<table>]) : integer
 sc1_kbytes_in([<table>]) : integer
 sc2_kbytes_in([<table>]) : integer
@@ -9183,7 +10207,7 @@ sc2_kbytes_in([<table>]) : integer
   test is currently performed on 32-bit integers, which limits values to 4
   terabytes. See also src_kbytes_in.
 
-sc_kbytes_out(<ctr>,[<table>]) : integer
+sc_kbytes_out(<ctr>[,<table>]) : integer
 sc0_kbytes_out([<table>]) : integer
 sc1_kbytes_out([<table>]) : integer
 sc2_kbytes_out([<table>]) : integer
@@ -9192,7 +10216,7 @@ sc2_kbytes_out([<table>]) : integer
   test is currently performed on 32-bit integers, which limits values to 4
   terabytes. See also src_kbytes_out.
 
-sc_sess_cnt(<ctr>,[<table>]) : integer
+sc_sess_cnt(<ctr>[,<table>]) : integer
 sc0_sess_cnt([<table>]) : integer
 sc1_sess_cnt([<table>]) : integer
 sc2_sess_cnt([<table>]) : integer
@@ -9203,7 +10227,7 @@ sc2_sess_cnt([<table>]) : integer
   backend sessions if some HTTP keep-alive is performed over the connection
   with the client. See also src_sess_cnt.
 
-sc_sess_rate(<ctr>,[<table>]) : integer
+sc_sess_rate(<ctr>[,<table>]) : integer
 sc0_sess_rate([<table>]) : integer
 sc1_sess_rate([<table>]) : integer
 sc2_sess_rate([<table>]) : integer
@@ -9214,7 +10238,7 @@ sc2_sess_rate([<table>]) : integer
   connection could result in many backend sessions if some HTTP keep-alive is
   performed over the connection with the client. See also src_sess_rate.
 
-sc_tracked(<ctr>,[<table>]) : boolean
+sc_tracked(<ctr>[,<table>]) : boolean
 sc0_tracked([<table>]) : boolean
 sc1_tracked([<table>]) : boolean
 sc2_tracked([<table>]) : boolean
@@ -9222,7 +10246,7 @@ sc2_tracked([<table>]) : boolean
   the current session. This can be useful when deciding whether or not we want
   to set some values in a header passed to the server.
 
-sc_trackers(<ctr>,[<table>]) : integer
+sc_trackers(<ctr>[,<table>]) : integer
 sc0_trackers([<table>]) : integer
 sc1_trackers([<table>]) : integer
 sc2_trackers([<table>]) : integer
@@ -9248,6 +10272,10 @@ src : ip
   behind a proxy. However if the "accept-proxy" bind directive is used, it can
   be the address of a client behind another PROXY-protocol compatible component
   for all rule sets except "tcp-request connection" which sees the real address.
+
+  Example:
+       # add an HTTP header in requests with the originating address' country
+       http-request set-header X-Country %[src,map_ip(geoip.lst)]
 
 src_bytes_in_rate([<table>]) : integer
   Returns the average bytes rate from the incoming connection's source address
@@ -9412,14 +10440,45 @@ srv_id : integer
   debugging.
 
 
-7.3.3. Fetching samples at Layer 5
+7.3.4. Fetching samples at Layer 5
 ----------------------------------
 
 The layer 5 usually describes just the session layer which in haproxy is
 closest to the session once all the connection handshakes are finished, but
 when no content is yet made available. The fetch methods described here are
 usable as low as the "tcp-request content" rule sets unless they require some
-future information. Those generally include the results of SSL negociations.
+future information. Those generally include the results of SSL negotiations.
+
+ssl_bc : boolean
+  Returns true when the back connection was made via an SSL/TLS transport
+  layer and is locally deciphered. This means the outgoing connection was made
+  other a server with the "ssl" option.
+
+ssl_bc_alg_keysize : integer
+  Returns the symmetric cipher key size supported in bits when the outgoing
+  connection was made over an SSL/TLS transport layer.
+
+ssl_bc_cipher : string
+  Returns the name of the used cipher when the outgoing connection was made
+  over an SSL/TLS transport layer.
+
+ssl_bc_protocol : string
+  Returns the name of the used protocol when the outgoing connection was made
+  over an SSL/TLS transport layer.
+
+ssl_bc_unique_id : binary
+  When the outgoing connection was made over an SSL/TLS transport layer,
+  returns the TLS unique ID as defined in RFC5929 section 3. The unique id
+  can be encoded to base64 using the converter: "ssl_bc_unique_id,base64".
+
+ssl_bc_session_id : binary
+  Returns the SSL ID of the back connection when the outgoing connection was
+  made over an SSL/TLS transport layer. It is useful to log if we want to know
+  if session was reused or not.
+
+ssl_bc_use_keysize : integer
+  Returns the symmetric cipher key size used in bits when the outgoing
+  connection was made over an SSL/TLS transport layer.
 
 ssl_c_ca_err : integer
   When the incoming connection was made over an SSL/TLS transport layer,
@@ -9451,32 +10510,20 @@ ssl_c_i_dn([<entry>[,<occ>]]) : string
   For instance, "ssl_c_i_dn(OU,2)" the second organization unit, and
   "ssl_c_i_dn(CN)" retrieves the common name.
 
-  ACL derivatives :
-    ssl_c_i_dn([<entry>[,<occ>]]) : exact string match
-
 ssl_c_key_alg : string
   Returns the name of the algorithm used to generate the key of the certificate
   presented by the client when the incoming connection was made over an SSL/TLS
   transport layer.
-
-  ACL derivatives :
-    ssl_c_key_alg : exact string match
 
 ssl_c_notafter : string
   Returns the end date presented by the client as a formatted string
   YYMMDDhhmmss[Z] when the incoming connection was made over an SSL/TLS
   transport layer.
 
-  ACL derivatives :
-    ssl_c_notafter : exact string match
-
 ssl_c_notbefore : string
   Returns the start date presented by the client as a formatted string
   YYMMDDhhmmss[Z] when the incoming connection was made over an SSL/TLS
   transport layer.
-
-  ACL derivatives :
-    ssl_c_notbefore : exact string match
 
 ssl_c_s_dn([<entry>[,<occ>]]) : string
   When the incoming connection was made over an SSL/TLS transport layer,
@@ -9488,16 +10535,10 @@ ssl_c_s_dn([<entry>[,<occ>]]) : string
   For instance, "ssl_c_s_dn(OU,2)" the second organization unit, and
   "ssl_c_s_dn(CN)" retrieves the common name.
 
-  ACL derivatives :
-    ssl_c_s_dn([<entry>[,<occ>]]) : exact string match
-
 ssl_c_serial : binary
   Returns the serial of the certificate presented by the client when the
   incoming connection was made over an SSL/TLS transport layer. When used for
   an ACL, the value(s) to match against can be passed in hexadecimal form.
-
-  ACL derivatives :
-    ssl_c_serial : hex block match
 
 ssl_c_sha1 : binary
   Returns the SHA-1 fingerprint of the certificate presented by the client when
@@ -9508,9 +10549,6 @@ ssl_c_sig_alg : string
   Returns the name of the algorithm used to sign the certificate presented by
   the client when the incoming connection was made over an SSL/TLS transport
   layer.
-
-  ACL derivatives :
-    ssl_c_sig_alg : exact string match
 
 ssl_c_used : boolean
   Returns true if current SSL session uses a client certificate even if current
@@ -9536,32 +10574,20 @@ ssl_f_i_dn([<entry>[,<occ>]]) : string
   For instance, "ssl_f_i_dn(OU,2)" the second organization unit, and
   "ssl_f_i_dn(CN)" retrieves the common name.
 
-  ACL derivatives :
-    ssl_f_i_dn([<entry>[,<occ>]]) : exact string match
-
 ssl_f_key_alg : string
   Returns the name of the algorithm used to generate the key of the certificate
   presented by the frontend when the incoming connection was made over an
   SSL/TLS transport layer.
-
-  ACL derivatives :
-    ssl_f_key_alg : exact string match
 
 ssl_f_notafter : string
   Returns the end date presented by the frontend as a formatted string
   YYMMDDhhmmss[Z] when the incoming connection was made over an SSL/TLS
   transport layer.
 
-  ACL derivatives :
-    ssl_f_notafter : exact string match
-
 ssl_f_notbefore : string
   Returns the start date presented by the frontend as a formatted string
   YYMMDDhhmmss[Z] when the incoming connection was made over an SSL/TLS
   transport layer.
-
-  ACL derivatives :
-    ssl_f_notbefore : exact string match
 
 ssl_f_s_dn([<entry>[,<occ>]]) : string
   When the incoming connection was made over an SSL/TLS transport layer,
@@ -9573,24 +10599,20 @@ ssl_f_s_dn([<entry>[,<occ>]]) : string
   For instance, "ssl_f_s_dn(OU,2)" the second organization unit, and
   "ssl_f_s_dn(CN)" retrieves the common name.
 
-  ACL derivatives :
-    ssl_f_s_dn([<entry>[,<occ>]]) : exact string match
-
 ssl_f_serial : binary
   Returns the serial of the certificate presented by the frontend when the
   incoming connection was made over an SSL/TLS transport layer. When used for
   an ACL, the value(s) to match against can be passed in hexadecimal form.
 
-  ACL derivatives :
-    ssl_f_serial : hex block match
+ssl_f_sha1 : binary
+  Returns the SHA-1 fingerprint of the certificate presented by the frontend
+  when the incoming connection was made over an SSL/TLS transport layer. This
+  can be used to know which certificate was chosen using SNI.
 
 ssl_f_sig_alg : string
   Returns the name of the algorithm used to sign the certificate presented by
   the frontend when the incoming connection was made over an SSL/TLS transport
   layer.
-
-  ACL derivatives :
-    ssl_f_sig_alg : exact string match
 
 ssl_f_version : integer
   Returns the version of the certificate presented by the frontend when the
@@ -9613,7 +10635,7 @@ ssl_fc_alg_keysize : integer
   connection was made over an SSL/TLS transport layer.
 
 ssl_fc_alpn : string
-  This extracts the Application Layer Protocol Negociation field from an
+  This extracts the Application Layer Protocol Negotiation field from an
   incoming connection made via a TLS transport layer and locally deciphered by
   haproxy. The result is a string containing the protocol name advertised by
   the client. The SSL library must have been built with support for TLS
@@ -9623,15 +10645,9 @@ ssl_fc_alpn : string
   list, any other one may be requested. The TLS ALPN extension is meant to
   replace the TLS NPN extension. See also "ssl_fc_npn".
 
-  ACL derivatives :
-    ssl_fc_alpn : exact string match
-
 ssl_fc_cipher : string
   Returns the name of the used cipher when the incoming connection was made
   over an SSL/TLS transport layer.
-
-  ACL derivatives :
-    ssl_fc_cipher : exact string match
 
 ssl_fc_has_crt : boolean
   Returns true if a client certificate is present in an incoming connection over
@@ -9649,7 +10665,7 @@ ssl_fc_has_sni : boolean
   haproxy -vv).
 
 ssl_fc_npn : string
-  This extracts the Next Protocol Negociation field from an incoming connection
+  This extracts the Next Protocol Negotiation field from an incoming connection
   made via a TLS transport layer and locally deciphered by haproxy. The result
   is a string containing the protocol name advertised by the client. The SSL
   library must have been built with support for TLS extensions enabled (check
@@ -9658,15 +10674,14 @@ ssl_fc_npn : string
   forces the client to pick a protocol from this list, any other one may be
   requested. Please note that the TLS NPN extension was replaced with ALPN.
 
-  ACL derivatives :
-    ssl_fc_npn : exact string match
-
 ssl_fc_protocol : string
   Returns the name of the used protocol when the incoming connection was made
   over an SSL/TLS transport layer.
 
-  ACL derivatives :
-    ssl_fc_protocol : exact string match
+ssl_fc_unique_id : binary
+  When the incoming connection was made over an SSL/TLS transport layer,
+  returns the TLS unique ID as defined in RFC5929 section 3. The unique id
+  can be encoded to base64 using the converter: "ssl_bc_unique_id,base64".
 
 ssl_fc_session_id : binary
   Returns the SSL ID of the front connection when the incoming connection was
@@ -9688,7 +10703,6 @@ ssl_fc_sni : string
   enabled (check haproxy -vv).
 
   ACL derivatives :
-    ssl_fc_sni     : exact string match
     ssl_fc_sni_end : suffix match
     ssl_fc_sni_reg : regex match
 
@@ -9697,7 +10711,7 @@ ssl_fc_use_keysize : integer
   connection was made over an SSL/TLS transport layer.
 
 
-7.3.4. Fetching samples from buffer contents (Layer 6)
+7.3.5. Fetching samples from buffer contents (Layer 6)
 ------------------------------------------------------
 
 Fetching samples from buffer contents is a bit different from the previous
@@ -9926,7 +10940,7 @@ wait_end : boolean
      tcp-request content reject
 
 
-7.3.5. Fetching HTTP samples (Layer 7)
+7.3.6. Fetching HTTP samples (Layer 7)
 --------------------------------------
 
 It is possible to fetch samples from HTTP contents, requests and responses.
@@ -9970,6 +10984,38 @@ base32+src : binary
   below. The resulting type is of type binary, with a size of 8 or 20 bytes
   depending on the source address family. This can be used to track per-IP,
   per-URL counters.
+
+capture.req.hdr(<idx>) : string
+  This extracts the content of the header captured by the "capture request
+  header", idx is the position of the capture keyword in the configuration.
+  The first entry is an index of 0. See also: "capture request header".
+
+capture.req.method : string
+  This extracts the METHOD of an HTTP request. It can be used in both request
+  and response. Unlike "method", it can be used in both request and response
+  because it's allocated.
+
+capture.req.uri : string
+  This extracts the request's URI, which starts at the first slash and ends
+  before the first space in the request (without the host part). Unlike "path"
+  and "url", it can be used in both request and response because it's
+  allocated.
+
+capture.req.ver : string
+  This extracts the request's HTTP version and returns either "HTTP/1.0" or
+  "HTTP/1.1". Unlike "req.ver", it can be used in both request, response, and
+  logs because it relies on a persistent flag.
+
+capture.res.hdr(<idx>) : string
+  This extracts the content of the header captured by the "capture response
+  header", idx is the position of the capture keyword in the configuration.
+  The first entry is an index of 0.
+  See also: "capture response header"
+
+capture.res.ver : string
+  This extracts the response's HTTP version and returns either "HTTP/1.0" or
+  "HTTP/1.1". Unlike "res.ver", it can be used in logs because it relies on a
+  persistent flag.
 
 req.cook([<name>]) : string
 cook([<name>]) : string (deprecated)
@@ -10021,7 +11067,7 @@ hdr([<name>[,<occ>]]) : string
   used on responses. Please refer to these respective fetches for more details.
   In case of doubt about the fetch direction, please use the explicit ones.
   Note that contrary to the hdr() sample fetch method, the hdr_* ACL keywords
-  unambiguouslly apply to the request headers.
+  unambiguously apply to the request headers.
 
 req.fhdr(<name>[,<occ>]) : string
   This extracts the last occurrence of header <name> in an HTTP request. When
@@ -10101,15 +11147,19 @@ http_auth(<userlist>) : boolean
   fetch function is not really useful outside of ACLs. Currently only http
   basic auth is supported.
 
-http_auth_group(<userlist>) : group
-  Returns a boolean indicating whether the authentication data received from
-  the client match a username & password stored in the specified userlist, and
-  whether that username belongs to one of the groups supplied in ACL patterns.
+http_auth_group(<userlist>) : string
+  Returns a string corresponding to the user name found in the authentication
+  data received from the client if both the user name and password are valid
+  according to the specified userlist. The main purpose is to use it in ACLs
+  where it is then checked whether the user belongs to any group within a list.
   This fetch function is not really useful outside of ACLs. Currently only http
   basic auth is supported.
 
   ACL derivatives :
-    http_auth_group(<userlist>) : user group match
+    http_auth_group(<userlist>) : group ...
+    Returns true when the user extracted from the request and whose password is
+    valid according to the specified userlist belongs to at least one of the
+    groups.
 
 http_first_req : boolean
   Returns true when the request being processed is the first one of the
@@ -10596,7 +11646,7 @@ Detailed fields description :
     "Timers" below for more details.
 
   - "Tt" is the total time in milliseconds elapsed between the accept and the
-    last close. It covers all possible processings. There is one exception, if
+    last close. It covers all possible processing. There is one exception, if
     "option logasap" was specified, then the time counting stops at the moment
     the log is emitted. In this case, a '+' sign is prepended before the value,
     indicating that the final one will be larger. See "Timers" below for more
@@ -10792,7 +11842,7 @@ Detailed fields description :
     for more details.
 
   - "Tt" is the total time in milliseconds elapsed between the accept and the
-    last close. It covers all possible processings. There is one exception, if
+    last close. It covers all possible processing. There is one exception, if
     "option logasap" was specified, then the time counting stops at the moment
     the log is emitted. In this case, a '+' sign is prepended before the value,
     indicating that the final one will be larger. See "Timers" below for more
@@ -10951,7 +12001,8 @@ less common information such as the client's SSL certificate's DN, or to log
 the key that would be used to store an entry into a stick table.
 
 Note: spaces must be escaped. A space character is considered as a separator.
-HAproxy will automatically merge consecutive separators.
+In order to emit a verbatim '%', it must be preceded by another '%' resulting
+in '%%'. HAProxy will automatically merge consecutive separators.
 
 Flags are :
   * Q: quote a string
@@ -11021,7 +12072,7 @@ Please refer to the table below for currently defined variables :
   |   | %pid | PID                                           | numeric     |
   | H | %r   | http_request                                  | string      |
   |   | %rc  | retries                                       | numeric     |
-  | H | %rt  | http_request_counter                          | numeric     |
+  |   | %rt  | request_counter (HTTP req or TCP session)     | numeric     |
   |   | %s   | server_name                                   | string      |
   |   | %sc  | srv_conn     (server concurrent connections)  | numeric     |
   |   | %si  | server_IP                   (target address)  | IP          |
@@ -11090,7 +12141,7 @@ ask how to disable logging for those checks. There are three possibilities :
   - if the connection come from a known source network, use "monitor-net" to
     declare this network as monitoring only. Any host in this network will then
     only be able to perform health checks, and their requests will not be
-    logged. This is generally appropriate to designate a list of equipments
+    logged. This is generally appropriate to designate a list of equipment
     such as other load-balancers.
 
   - if the tests are performed on a known URI, use "monitor-uri" to declare
@@ -11185,7 +12236,7 @@ mode, 5 control points are reported under the form "Tq/Tw/Tc/Tr/Tt" :
     and the moment both ends were closed. The exception is when the "logasap"
     option is specified. In this case, it only equals (Tq+Tw+Tc+Tr), and is
     prefixed with a '+' sign. From this field, we can deduce "Td", the data
-    transmission time, by substracting other timers when valid :
+    transmission time, by subtracting other timers when valid :
 
         Td = Tt - (Tq + Tw + Tc + Tr)
 
@@ -11258,7 +12309,7 @@ Other noticeable HTTP log cases ('xx' means any value to be ignored) :
                    the client connection was maintained open.
 
   Tq/Tw/Tc/-1/Tt   The server has accepted the connection but did not return
-                   a complete response in time, or it closed its connexion
+                   a complete response in time, or it closed its connection
                    unexpectedly after Tt-(Tq+Tw+Tc) ms. Check the session
                    termination flags, then check the "timeout server" setting.
 
@@ -11394,7 +12445,7 @@ each of which has a special meaning :
 
         U : the proxy UPDATED the last date in the cookie that was presented by
             the client. This can only happen in insert mode with "maxidle". It
-            happens everytime there is activity at a different date than the
+            happens every time there is activity at a different date than the
             date indicated in the cookie. If any other change happens, such as
             a redispatch, then the cookie will be marked as inserted instead.
 
@@ -11883,6 +12934,7 @@ page. Both means provide a CSV format whose fields follow.
  52. comp_out: number of HTTP response bytes emitted by the compressor
  53. comp_byp: number of bytes that bypassed the HTTP compressor (CPU/BW limit)
  54. comp_rsp: number of HTTP responses that were compressed
+ 55. lastsess: number of seconds since last session assigned to server/backend
 
 
 9.2. Unix Socket commands
@@ -11967,6 +13019,19 @@ If an unknown command is sent, haproxy displays the usage message which reminds
 all supported commands. Some commands support a more complex syntax, generally
 it will explain what part of the command is invalid when this happens.
 
+add acl <acl> <pattern>
+  Add an entry into the acl <acl>. <acl> is the #<id> or the <file> returned by
+  "show acl". This command does not verify if the entry already exists. This
+  command cannot be used if the reference <acl> is a file also used with a map.
+  In this case, you must use the command "add map" in place of "add acl".
+
+add map <map> <key> <value>
+  Add an entry into the map <map> to associate the value <value> to the key
+  <key>. This command does not verify if the entry already exists. It is
+  mainly used to fill a map after a clear operation. Note that if the reference
+  <map> is a file and is shared with a map, this map will contain also a new
+  pattern entry.
+
 clear counters
   Clear the max values of the statistics counters in each proxy (frontend &
   backend) and in each server. The cumulated counters are not affected. This
@@ -11978,6 +13043,16 @@ clear counters all
   Clear all statistics counters in each proxy (frontend & backend) and in each
   server. This has the same effect as restarting. This command is restricted
   and can only be issued on sockets configured for level "admin".
+
+clear acl <acl>
+  Remove all entries from the acl <acl>. <acl> is the #<id> or the <file>
+  returned by "show acl". Note that if the reference <acl> is a file and is
+  shared with a map, this map will be also cleared.
+
+clear map <map>
+  Remove all entries from the map <map>. <map> is the #<id> or the <file>
+  returned by "show map". Note that if the reference <map> is a file and is
+  shared with a acl, this acl will be also cleared.
 
 clear table <table> [ data.<type> <operator> <value> ] | [ key <key> ]
   Remove entries from the stick-table <table>.
@@ -12027,6 +13102,42 @@ clear table <table> [ data.<type> <operator> <value> ] | [ key <key> ]
         $ echo "show table http_proxy" | socat stdio /tmp/sock1
     >>> # table: http_proxy, type: ip, size:204800, used:1
 
+del acl <acl> [<key>|#<ref>]
+  Delete all the acl entries from the acl <acl> corresponding to the key <key>.
+  <acl> is the #<id> or the <file> returned by "show acl". If the <ref> is used,
+  this command delete only the listed reference. The reference can be found with
+  listing the content of the acl. Note that if the reference <acl> is a file and
+  is shared with a map, the entry will be also deleted in the map.
+
+del map <map> [<key>|#<ref>]
+  Delete all the map entries from the map <map> corresponding to the key <key>.
+  <map> is the #<id> or the <file> returned by "show map". If the <ref> is used,
+  this command delete only the listed reference. The reference can be found with
+  listing the content of the map. Note that if the reference <map> is a file and
+  is shared with a acl, the entry will be also deleted in the map.
+
+disable agent <backend>/<server>
+  Mark the auxiliary agent check as temporarily stopped.
+
+  In the case where an agent check is being run as a auxiliary check, due
+  to the agent-check parameter of a server directive, new checks are only
+  initialised when the agent is in the enabled. Thus, disable agent will
+  prevent any new agent checks from begin initiated until the agent
+  re-enabled using enable agent.
+
+  When an agent is disabled the processing of an auxiliary agent check that
+  was initiated while the agent was set as enabled is as follows: All
+  results that would alter the weight, specifically "drain" or a weight
+  returned by the agent, are ignored. The processing of agent check is
+  otherwise unchanged.
+
+  The motivation for this feature is to allow the weight changing effects
+  of the agent checks to be paused to allow the weight of a server to be
+  configured using set weight without being overridden by the agent.
+
+  This command is restricted and can only be issued on sockets configured for
+  level "admin".
+
 disable frontend <frontend>
   Mark the frontend as temporarily stopped. This corresponds to the mode which
   is used during a soft restart : the frontend releases the port but can be
@@ -12058,6 +13169,15 @@ disable server <backend>/<server>
   This command is restricted and can only be issued on sockets configured for
   level "admin".
 
+enable agent <backend>/<server>
+  Resume auxiliary agent check that was temporarily stopped.
+
+  See "disable agent" for details of the effect of temporarily starting
+  and stopping an auxiliary agent.
+
+  This command is restricted and can only be issued on sockets configured for
+  level "admin".
+
 enable frontend <frontend>
   Resume a frontend which was temporarily stopped. It is possible that some of
   the listening ports won't be able to bind anymore (eg: if another process
@@ -12080,6 +13200,41 @@ enable server <backend>/<server>
 
   This command is restricted and can only be issued on sockets configured for
   level "admin".
+
+get map <map> <value>
+get acl <acl> <value>
+  Lookup the value <value> in the map <map> or in the ACL <acl>. <map> or <acl>
+  are the #<id> or the <file> returned by "show map" or "show acl". This command
+  returns all the matching patterns associated with this map. This is useful for
+  debugging maps and ACLs. The output format is composed by one line par
+  matching type. Each line is composed by space-delimited series of words.
+
+  The first two words are:
+
+     <match method>:   The match method applied. It can be "found", "bool",
+                       "int", "ip", "bin", "len", "str", "beg", "sub", "dir",
+                       "dom", "end" or "reg".
+
+     <match result>:   The result. Can be "match" or "no-match".
+
+  The following words are returned only if the pattern matches an entry.
+
+     <index type>:     "tree" or "list". The internal lookup algorithm.
+
+     <case>:           "case-insensitive" or "case-sensitive". The
+                       interpretation of the case.
+
+     <entry matched>:  match="<entry>". Return the matched pattern. It is
+                       useful with regular expressions.
+
+  The two last word are used to show the returned value and its type. With the
+  "acl" case, the pattern doesn't exist.
+
+     return=nothing:        No return because there are no "map".
+     return="<value>":      The value returned in the string format.
+     return=cannot-display: The value cannot be converted as string.
+
+     type="<type>":         The type of the returned sample.
 
 get weight <backend>/<server>
   Report the current weight and the initial weight of server <server> in
@@ -12105,6 +13260,11 @@ prompt
 
 quit
   Close the connection when in interactive mode.
+
+set map <map> [<key>|#<ref>] <value>
+  Modify the value corresponding to each key <key> in a map <map>. <map> is the
+  #<id> or <file> returned by "show map". If the <ref> is used in place of
+  <key>, only the entry pointed by <ref> is changed. The new value is <value>.
 
 set maxconn frontend <frontend> <value>
   Dynamically change the specified frontend's maxconn setting. Any positive
@@ -12134,6 +13294,19 @@ set rate-limit http-compression global <value>
   'maxcomprate' setting. A value of zero disables the limitation. The value is
   passed in number of kilobytes per second. The value is available in the "show
   info" on the line "CompressBpsRateLim" in bytes.
+
+set rate-limit sessions global <value>
+  Change the process-wide session rate limit, which is set by the global
+  'maxsessrate' setting. A value of zero disables the limitation. This limit
+  applies to all frontends and the change has an immediate effect. The value
+  is passed in number of sessions per second.
+
+set rate-limit ssl-sessions global <value>
+  Change the process-wide SSL session rate limit, which is set by the global
+  'maxsslrate' setting. A value of zero disables the limitation. This limit
+  applies to all frontends and the change has an immediate effect. The value
+  is passed in number of sessions per second sent to the SSL stack. It applies
+  before the handshake in order to protect the stack against handshake abuses.
 
 set table <table> key <key> [data.<data_type> <value>]*
   Create or update a stick-table entry in the table. If the key is not present,
@@ -12220,6 +13393,29 @@ show errors [<iid>]
 
 show info
   Dump info about haproxy status on current process.
+
+show map [<map>]
+  Dump info about map converters. Without argument, the list of all available
+  maps is returned. If a <map> is specified, its contents are dumped. <map> is
+  the #<id> or <file>. The first column is a unique identifier. It can be used
+  as reference for the operation "del map" and "set map". The second column is
+  the pattern and the third column is the sample if available. The data returned
+  are not directly a list of available maps, but are the list of all patterns
+  composing any map. Many of these patterns can be shared with ACL.
+
+show acl [<acl>]
+  Dump info about acl converters. Without argument, the list of all available
+  acls is returned. If a <acl> is specified, its contents are dumped. <acl> if
+  the #<id> or <file>. The dump format is the same than the map even for the
+  sample value. The data returned are not a list of available ACL, but are the
+  list of all patterns composing any ACL. Many of these patterns can be shared
+  with maps.
+
+show pools
+  Dump the status of internal memory pools. This is useful to track memory
+  usage when suspecting a memory leak for example. It does exactly the same
+  as the SIGQUIT when running in foreground except that it does not flush
+  the pools.
 
 show sess
   Dump all known sessions. Avoid doing this on slow connections as this can

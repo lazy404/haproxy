@@ -55,6 +55,8 @@ static inline void channel_init(struct channel *chn)
 	chn->buf->i = 0;
 	chn->buf->p = chn->buf->data;
 	chn->to_forward = 0;
+	chn->last_read = now_ms;
+	chn->xfer_small = chn->xfer_large = 0;
 	chn->total = 0;
 	chn->pipe = NULL;
 	chn->analysers = 0;
@@ -276,14 +278,6 @@ static inline int buffer_reserved(const struct channel *chn)
 static inline int buffer_max_len(const struct channel *chn)
 {
 	return chn->buf->size - buffer_reserved(chn);
-}
-
-/* Return the amount of bytes that can be written into the buffer at once,
- * excluding reserved space, which is preserved.
- */
-static inline int buffer_contig_space_res(const struct channel *chn)
-{
-	return buffer_contig_space_with_res(chn->buf, buffer_reserved(chn));
 }
 
 /* Returns the amount of space available at the input of the buffer, taking the
