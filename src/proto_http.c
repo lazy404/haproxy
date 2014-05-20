@@ -1467,7 +1467,7 @@ get_http_auth(struct session *s)
 
 char *find_cookie_value_end(char *s, const char *e);
 
-int
+int 
 get_cookie_auth(struct session *s)
 {
 
@@ -1487,7 +1487,7 @@ get_cookie_auth(struct session *s)
     
 	h=tmp=ctx.line + ctx.val;
 
-    end=ctx.line + ctx.vlen;
+    end=ctx.line + ctx.val+ctx.vlen;
     
 	while(h < end) {
         p = memchr(h, '=', end-h);
@@ -1499,9 +1499,9 @@ get_cookie_auth(struct session *s)
         
         chunk_printf(&trash, "end=%x,tmp=%x, h='%s' p='%s' tmp='%s'\n", end, tmp, h, p, tmp);
         write(1, trash.str, trash.len);
-        //write(1, h, ctx.vlen);
+        write(1, h, ctx.vlen);
         if( (memcmp("name", h, 4) == 0 ) && (memcmp("dupa",p, 4) == 0 ))
-            return 0;
+            return 1;
 
         h=tmp+2;
     }
@@ -3315,7 +3315,10 @@ http_req_get_intercept_rule(struct proxy *px, struct list *rules, struct session
 			return HTTP_RULE_RES_ABRT;
 
 		case HTTP_REQ_ACT_COOKIE_AUTH:
-			return rule;
+    		chunk_printf(&trash, HTTP_COOKIE_AUTH, "name", "dupa2");
+    		txn->status = 200;
+    		stream_int_retnclose(&s->si[0], &trash);
+			return HTTP_RULE_RES_ABRT;
 
 		case HTTP_REQ_ACT_REDIR:
 			if (!http_apply_redirect_rule(rule->arg.redir, s, txn))
@@ -3999,15 +4002,6 @@ int http_process_req_common(struct session *s, struct channel *req, int an_bit, 
 		if (txn->flags & TX_CLTARPIT)
 			goto tarpit;
 	}
-
-	if (http_req_last_rule && http_req_last_rule->action == HTTP_REQ_ACT_COOKIE_AUTH) {
-		chunk_printf(&trash, HTTP_COOKIE_AUTH, "name", "dupa");
-		txn->status = 200;
-		stream_int_retnclose(req->prod, &trash);
-	
-		goto return_prx_cond;
-	}
-
 
 	/* add request headers from the rule sets in the same order */
 	list_for_each_entry(wl, &px->req_add, list) {
@@ -8867,10 +8861,7 @@ struct http_req_rule *parse_http_req_cond(const char **args, const char *file, i
 	} else if (!strcmp(args[0], "auth")) {
 		rule->action = HTTP_REQ_ACT_AUTH;
 		cur_arg = 1;
-	} else if (!strcmp(args[0], "cookie_auth")) {
-		rule->action = HTTP_REQ_ACT_COOKIE_AUTH;
-		cur_arg = 1;
-
+        
 		while(*args[cur_arg]) {
 			if (!strcmp(args[cur_arg], "realm")) {
 				rule->arg.auth.realm = strdup(args[cur_arg + 1]);
@@ -8879,6 +8870,19 @@ struct http_req_rule *parse_http_req_cond(const char **args, const char *file, i
 			} else
 				break;
 		}
+	} else if (!strcmp(args[0], "cookie_auth")) {
+		rule->action = HTTP_REQ_ACT_COOKIE_AUTH;
+		cur_arg = 1;
+
+/*		while(*args[cur_arg]) {
+			if (!strcmp(args[cur_arg], "realm")) {
+				rule->arg.auth.realm = strdup(args[cur_arg + 1]);
+				cur_arg+=2;
+				continue;
+			} else
+				break;
+		}
+*/
 	} else if (!strcmp(args[0], "set-nice")) {
 		rule->action = HTTP_REQ_ACT_SET_NICE;
 		cur_arg = 1;

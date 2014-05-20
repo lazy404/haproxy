@@ -1,0 +1,1 @@
+make TARGET=generic DEBUG='-O0 -g'
