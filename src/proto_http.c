@@ -216,17 +216,17 @@ const char *stat_status_codes[STAT_STATUS_SIZE] = {
 	[STAT_STATUS_UNKN] = "UNKN",
 };
 
-/*const char *HTTP_COOKIE_AUTH =
+const char *HTTP_COOKIE_AUTH =
 	"HTTP/1.0 200 OK\r\n"
 	"Cache-Control: no-cache\r\n"
 	"Connection: close\r\n"
 	"Content-Type: text/html\r\n"
-    "Set-Cookie: %s=%s\r\n"
+    "Set-Cookie: %s=%s; Expires=Thu, 01-Jan-1970 00:00:01 GMT; path=/\r\n"
     "Refresh: 5\r\n"
 	"\r\n"
-	"<html><body><h1>Eat the cooie !!</h1></body></html>\n";
-*/
-const char *HTTP_COOKIE_AUTH =
+	"<html><body><h1>Eat this cookie !</h1></body></html>\n";
+
+const char *HTTP_COOKIE_AUTH_JS =
 	"HTTP/1.0 200 OK\r\n"
 	"Cache-Control: no-cache\r\n"
 	"Connection: close\r\n"
@@ -236,14 +236,15 @@ const char *HTTP_COOKIE_AUTH =
 	"<html>\n"
     "<head>\n"
     "<script>\n"
-    "function setCookie()"
-    "{"
-    "document.cookie='name=dupa';"
-    "}"
+    "function setCookie()\n"
+    "{\n"
+    "document.cookie='%s=%s';\n"
+    "}\n"
     "</script>\n"
     "</head>\n"
     "<body onload=\"setCookie()\">"
-    "<h1>javascript cookie set</h1>"
+    "<h1 align=center></h1>"
+    "<noscript>Prosimy o włączenie JavaScript by uzyskać dostęp do tej stony.</noscript>"
     "</body>"
     "</html>\n";
 
@@ -1467,46 +1468,69 @@ get_http_auth(struct session *s)
 
 char *find_cookie_value_end(char *s, const char *e);
 
-int 
-get_cookie_auth(struct session *s)
-{
+/*
+        struct connection *cli_conn = objt_conn(l4->si[0].end);
 
+        if (!cli_conn)
+                return 0;
+
+        switch (cli_conn->addr.from.ss_family) {
+        case AF_INET:
+                smp->data.ipv4 = ((struct sockaddr_in *)&cli_conn->addr.from)->sin_addr;
+                smp->type = SMP_T_IPV4;
+                break;
+*/
+int cookie_auth(struct session *s)
+{
+    struct connection *cli_conn;
+    struct sockaddr * client_addr;
+    int *number;
 	struct http_txn *txn = &s->txn;
 	struct hdr_ctx ctx;
-	char *h, *p, *end,*tmp;
+	char *h, *p, *end, *tmp;
 	int len;
-
-	ctx.idx = 0;
-
-
-	h = "Cookie";
-	len = strlen(h);
     
-	if (!http_find_header2(h, len, s->req->buf->p, &txn->hdr_idx, &ctx))
-		return 0;
+    cli_conn = objt_conn(s->si[0].end);
+
+    if(cli_conn && cli_conn->addr.from.ss_family == AF_INET)
+        number = (int*) ((struct sockaddr_in *)&cli_conn->addr.from)->sin_addr.s_addr;
+    else
+        /* wtf brak adresu ip */
+        return 1;
+
+    ctx.idx = 0;
     
-	h=tmp=ctx.line + ctx.val;
+    chunk_printf(&trash, "number=%d\n", number);
+    write(1, trash.str, trash.len);
 
-    end=ctx.line + ctx.val+ctx.vlen;
-    
-	while(h < end) {
-        p = memchr(h, '=', end-h);
-        if (!p || p == h)
-		    return 0;
+	while(http_find_header2("Cookie", sizeof("Cookie"), s->req->buf->p, &txn->hdr_idx, &ctx)) {
+        /* >Cookie: ... */
+        h=tmp=ctx.line + ctx.val;
 
-        p++;
-        tmp = find_cookie_value_end(p, end);
-        
-        chunk_printf(&trash, "end=%x,tmp=%x, h='%s' p='%s' tmp='%s'\n", end, tmp, h, p, tmp);
-        write(1, trash.str, trash.len);
-        write(1, h, ctx.vlen);
-        if( (memcmp("name", h, 4) == 0 ) && (memcmp("dupa",p, 4) == 0 ))
-            return 1;
+        /* Cookie: ...\r\n>*/
+        end=ctx.line + ctx.val+ctx.vlen;
 
-        h=tmp+2;
+        while(h < end) {
+            p = memchr(h, '=', end-h);
+            if (!p || p == h)
+                return 0;
+            p++;
+            
+            tmp = find_cookie_value_end(p, end);
+
+            chunk_printf(&trash, "end=%x,tmp=%x, h='%s' p='%s' tmp='%s' %d\n", end, tmp, h, p, tmp, number);
+            write(1, trash.str, trash.len);
+            write(1, h, ctx.vlen);
+
+            if( (memcmp("name", h, 4) == 0 ) && (memcmp("dupa",p, 4) == 0 ))
+                return 1;
+
+            h=tmp+2;
+        }
     }
-    
-	return 0;
+
+    /* nie znalezlismy odpowiedniego ciasteczka*/
+    return 0;
 }
 
 
@@ -3315,7 +3339,10 @@ http_req_get_intercept_rule(struct proxy *px, struct list *rules, struct session
 			return HTTP_RULE_RES_ABRT;
 
 		case HTTP_REQ_ACT_COOKIE_AUTH:
-    		chunk_printf(&trash, HTTP_COOKIE_AUTH, "name", "dupa2");
+		//chunk_printf(&trash,
+		//	     "Set-Cookie: %s=; Expires=Thu, 01-Jan-1970 00:00:01 GMT; path=/",
+		//	     s->be->cookie_name);
+    		chunk_printf(&trash, HTTP_COOKIE_AUTH_JS, "name", "dupa");
     		txn->status = 200;
     		stream_int_retnclose(&s->si[0], &trash);
 			return HTTP_RULE_RES_ABRT;
@@ -10410,7 +10437,7 @@ smp_fetch_cookie_auth(struct proxy *px, struct session *l4, void *l7, unsigned i
 */
 	CHECK_HTTP_MESSAGE_FIRST();
 
-	if (!get_cookie_auth(l4))
+	if (!cookie_auth(l4))
 		return 0;
 
 	smp->type = SMP_T_BOOL;
