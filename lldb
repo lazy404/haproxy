@@ -1,0 +1,3 @@
+file ./haproxy
+breakpoint set -n cookie_auth
+run -f ./examples/cookie_auth.cfg

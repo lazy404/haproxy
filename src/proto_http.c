@@ -1484,26 +1484,28 @@ int cookie_auth(struct session *s)
 {
     struct connection *cli_conn;
     struct sockaddr * client_addr;
-    int *number;
+    unsigned long number;
+    unsigned long knumer;
 	struct http_txn *txn = &s->txn;
 	struct hdr_ctx ctx;
 	char *h, *p, *end, *tmp;
 	int len;
-    
+    unsigned int accept_date = (unsigned int)s->logs.accept_date.tv_sec;
+
     cli_conn = objt_conn(s->si[0].end);
 
     if(cli_conn && cli_conn->addr.from.ss_family == AF_INET)
-        number = (int*) ((struct sockaddr_in *)&cli_conn->addr.from)->sin_addr.s_addr;
+        number = (int) ((struct sockaddr_in *)&cli_conn->addr.from)->sin_addr.s_addr;
     else
         /* wtf brak adresu ip */
         return 1;
 
     ctx.idx = 0;
     
-    chunk_printf(&trash, "number=%d\n", number);
+    chunk_printf(&trash, "number=%lu\n", number);
     write(1, trash.str, trash.len);
-
-	while(http_find_header2("Cookie", sizeof("Cookie"), s->req->buf->p, &txn->hdr_idx, &ctx)) {
+    
+	while(http_find_header2("Cookie", sizeof("Cookie")-1, s->req->buf->p, &txn->hdr_idx, &ctx)) {
         /* >Cookie: ... */
         h=tmp=ctx.line + ctx.val;
 
@@ -1518,12 +1520,21 @@ int cookie_auth(struct session *s)
             
             tmp = find_cookie_value_end(p, end);
 
-            chunk_printf(&trash, "end=%x,tmp=%x, h='%s' p='%s' tmp='%s' %d\n", end, tmp, h, p, tmp, number);
-            write(1, trash.str, trash.len);
-            write(1, h, ctx.vlen);
+            if((p-h) != sizeof("name")) {
+                h=tmp+2;
+                continue;
+            }
+            
+            if((0==memcmp("name", h, sizeof("name")-1))) {
+                knumer=strtoul(p, &tmp, 10);
 
-            if( (memcmp("name", h, 4) == 0 ) && (memcmp("dupa",p, 4) == 0 ))
-                return 1;
+                /*chunk_printf(&trash, "h %s, numer%lu, knumer %lu\n", h, number, knumer);
+                write(1, trash.str, trash.len);
+                write(1, h, ctx.vlen);
+                */
+                if(number == knumer)
+                    return 1;
+            }
 
             h=tmp+2;
         }
