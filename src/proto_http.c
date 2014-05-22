@@ -1474,14 +1474,8 @@ extern unsigned long old_cookie_secret;
 unsigned int get_number(struct session *s, unsigned long *secret) {
     struct connection *cli_conn = objt_conn(s->si[0].end);
     
-    chunk_printf(&trash, "cookie_secret=%lu\n", *secret);
-    write(1, trash.str, trash.len);
-    
-    chunk_printf(&trash, "old_cookie_secret=%lu\n", *secret);
-    write(1, trash.str, trash.len);
-    
     if(cli_conn && cli_conn->addr.from.ss_family == AF_INET)
-        return (unsigned int) ((struct sockaddr_in *)&cli_conn->addr.from)->sin_addr.s_addr + *secret;
+        return (unsigned int) ((struct sockaddr_in *)&cli_conn->addr.from)->sin_addr.s_addr ^ *secret;
     else
         /* wtf brak adresu ip */
         return 0;
@@ -1519,6 +1513,12 @@ int cookie_auth(struct session *s)
             if((0==memcmp("name", h, sizeof("name")-1))) {
                 knumer=strtoul(p, &tmp, 10);
 
+                chunk_printf(&trash, "cookie_secret=%lu\n", cookie_secret);
+                write(1, trash.str, trash.len);
+    
+                chunk_printf(&trash, "old_cookie_secret=%lu\n", old_cookie_secret);
+                write(1, trash.str, trash.len);
+                
                 if(get_number(s, &cookie_secret) == knumer)
                     return 1;
 
