@@ -11567,9 +11567,8 @@ static struct sample_fetch_kw_list sample_fetch_keywords = {ILH, {
 	{ "hdr_ip",          smp_fetch_hdr_ip,         ARG2(0,STR,SINT), val_hdr, SMP_T_IPV4, SMP_USE_HRQHV },
 	{ "hdr_val",         smp_fetch_hdr_val,        ARG2(0,STR,SINT), val_hdr, SMP_T_UINT, SMP_USE_HRQHV },
 
-	{ "cookie_auth",       smp_fetch_cookie_auth,      0,      NULL,    SMP_T_BOOL, SMP_USE_HRQHV },
-//	{ "cookie_auth",       smp_fetch_cookie_auth,      ARG1(1,USR),      NULL,    SMP_T_BOOL, SMP_USE_HRQHV },
-    
+	{ "cookie_auth",       smp_fetch_cookie_auth,  0,                NULL,    SMP_T_BOOL, SMP_USE_HRQHV },
+
 	{ "http_auth",       smp_fetch_http_auth,      ARG1(1,USR),      NULL,    SMP_T_BOOL, SMP_USE_HRQHV },
 	{ "http_auth_group", smp_fetch_http_auth_grp,  ARG1(1,USR),      NULL,    SMP_T_STR,  SMP_USE_HRQHV },
 	{ "http_first_req",  smp_fetch_http_first_req, 0,                NULL,    SMP_T_BOOL, SMP_USE_HRQHP },
