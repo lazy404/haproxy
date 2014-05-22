@@ -2,3 +2,4 @@ make TARGET=generic DEBUG='-O0 -g'
 
 #breakpoint set -n cookie_auth
 #run -f ./examples/cookie_auth.cfg
+#echo 'show table backend; show table http'|socat /tmp/haproxy.stat stdio
