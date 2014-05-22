@@ -1343,6 +1343,20 @@ static struct task *manage_global_listener_queue(struct task *t)
 	return t;
 }
 
+unsigned long cookie_secret=0;
+unsigned long old_cookie_secret=0;
+
+#define UPDATE_COOKIE_INTERVAL 5000
+
+static struct task *update_cookie_secret(struct task *t)
+{
+    old_cookie_secret=cookie_secret;
+    cookie_secret=now.tv_sec;
+    
+	t->expire = tick_add(now_ms, MS_TO_TICKS(UPDATE_COOKIE_INTERVAL));
+	return t;
+}
+
 int main(int argc, char **argv)
 {
 	int err, retry;
@@ -1629,6 +1643,21 @@ int main(int argc, char **argv)
 	}
 
 	protocol_enable_all();
+    
+    /* Task updating secret cookie value */
+    
+	struct task *update_cookie_task;
+
+	if ((update_cookie_task = task_new()) == NULL) {
+		return 1;
+	}
+
+	update_cookie_task->process = update_cookie_secret;
+	update_cookie_task->context = NULL;
+    /* co 5 sekund */
+	update_cookie_task->expire = tick_add(now_ms, MS_TO_TICKS(5000));
+	task_queue(update_cookie_task);
+
 	/*
 	 * That's it : the central polling loop. Run until we stop.
 	 */

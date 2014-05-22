@@ -231,19 +231,19 @@ const char *HTTP_COOKIE_AUTH_JS =
 	"Cache-Control: no-cache\r\n"
 	"Connection: close\r\n"
 	"Content-Type: text/html\r\n"
-    "Refresh: 5\r\n"
+    "Refresh: 10\r\n"
 	"\r\n"
 	"<html>\n"
     "<head>\n"
     "<script>\n"
     "function setCookie()\n"
     "{\n"
-    "document.cookie='%s=%s';\n"
+    "document.cookie='%s=%lu';\n"
     "}\n"
     "</script>\n"
     "</head>\n"
     "<body onload=\"setCookie()\">"
-    "<h1 align=center></h1>"
+    "<h1 align=center>Checking if You are a human</h1>"
     "<noscript>Prosimy o włączenie JavaScript by uzyskać dostęp do tej stony.</noscript>"
     "</body>"
     "</html>\n";
@@ -1468,43 +1468,34 @@ get_http_auth(struct session *s)
 
 char *find_cookie_value_end(char *s, const char *e);
 
-/*
-        struct connection *cli_conn = objt_conn(l4->si[0].end);
+extern unsigned long cookie_secret;
+extern unsigned long old_cookie_secret;
 
-        if (!cli_conn)
-                return 0;
-
-        switch (cli_conn->addr.from.ss_family) {
-        case AF_INET:
-                smp->data.ipv4 = ((struct sockaddr_in *)&cli_conn->addr.from)->sin_addr;
-                smp->type = SMP_T_IPV4;
-                break;
-*/
+unsigned int get_number(struct session *s, unsigned long *secret) {
+    struct connection *cli_conn = objt_conn(s->si[0].end);
+    
+    chunk_printf(&trash, "cookie_secret=%lu\n", *secret);
+    write(1, trash.str, trash.len);
+    
+    chunk_printf(&trash, "old_cookie_secret=%lu\n", *secret);
+    write(1, trash.str, trash.len);
+    
+    if(cli_conn && cli_conn->addr.from.ss_family == AF_INET)
+        return (unsigned int) ((struct sockaddr_in *)&cli_conn->addr.from)->sin_addr.s_addr + *secret;
+    else
+        /* wtf brak adresu ip */
+        return 0;
+}
+    
 int cookie_auth(struct session *s)
 {
-    struct connection *cli_conn;
-    struct sockaddr * client_addr;
-    unsigned long number;
     unsigned long knumer;
 	struct http_txn *txn = &s->txn;
 	struct hdr_ctx ctx;
 	char *h, *p, *end, *tmp;
-	int len;
-    unsigned int accept_date = (unsigned int)s->logs.accept_date.tv_sec;
-
-    cli_conn = objt_conn(s->si[0].end);
-
-    if(cli_conn && cli_conn->addr.from.ss_family == AF_INET)
-        number = (int) ((struct sockaddr_in *)&cli_conn->addr.from)->sin_addr.s_addr;
-    else
-        /* wtf brak adresu ip */
-        return 1;
 
     ctx.idx = 0;
-    
-    chunk_printf(&trash, "number=%lu\n", number);
-    write(1, trash.str, trash.len);
-    
+
 	while(http_find_header2("Cookie", sizeof("Cookie")-1, s->req->buf->p, &txn->hdr_idx, &ctx)) {
         /* >Cookie: ... */
         h=tmp=ctx.line + ctx.val;
@@ -1528,12 +1519,12 @@ int cookie_auth(struct session *s)
             if((0==memcmp("name", h, sizeof("name")-1))) {
                 knumer=strtoul(p, &tmp, 10);
 
-                /*chunk_printf(&trash, "h %s, numer%lu, knumer %lu\n", h, number, knumer);
-                write(1, trash.str, trash.len);
-                write(1, h, ctx.vlen);
-                */
-                if(number == knumer)
+                if(get_number(s, &cookie_secret) == knumer)
                     return 1;
+
+                if(get_number(s, &old_cookie_secret) == knumer)
+                    return 1;
+                
             }
 
             h=tmp+2;
@@ -3353,7 +3344,7 @@ http_req_get_intercept_rule(struct proxy *px, struct list *rules, struct session
 		//chunk_printf(&trash,
 		//	     "Set-Cookie: %s=; Expires=Thu, 01-Jan-1970 00:00:01 GMT; path=/",
 		//	     s->be->cookie_name);
-    		chunk_printf(&trash, HTTP_COOKIE_AUTH_JS, "name", "dupa");
+    		chunk_printf(&trash, HTTP_COOKIE_AUTH_JS, "name", get_number(s, &cookie_secret));
     		txn->status = 200;
     		stream_int_retnclose(&s->si[0], &trash);
 			return HTTP_RULE_RES_ABRT;
