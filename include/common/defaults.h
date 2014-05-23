@@ -214,4 +214,29 @@
 #define SSLCACHESIZE 20000
 #endif
 
+/* ssl cache size */
+#ifndef DEFAULT_COOKIE_AUTH_NAME
+#define DEFAULT_COOKIE_AUTH_NAME "cookie_auth"
+#endif
+
+#define DEFAULT_HTTP_COOKIE_AUTH "HTTP/1.0 200 OK\r\nCache-Control: no-cache\r\n" \
+    "Connection: close\r\n"\
+    "Content-Type: text/html\r\n"\
+    "\r\n"\
+    "<html>\n"\
+    "<head>\n"\
+    "<script>\n"\
+    "function setCookie()\n"\
+    "{\n"\
+    "document.cookie='%s=%lu';\n"\
+    "location.reload();\n"\
+    "}\n"\
+    "</script>\n"\
+    "</head>\n"\
+    "<body onload=\"setCookie()\">"\
+    "<h1 align=center>Checking if You are a human</h1>"\
+    "<noscript>Prosimy o włączenie JavaScript by uzyskać dostęp do tej stony.</noscript>"\
+    "</body>"\
+    "</html>\n"
+
 #endif /* _COMMON_DEFAULTS_H */

@@ -216,38 +216,6 @@ const char *stat_status_codes[STAT_STATUS_SIZE] = {
 	[STAT_STATUS_UNKN] = "UNKN",
 };
 
-const char *HTTP_COOKIE_AUTH =
-	"HTTP/1.0 200 OK\r\n"
-	"Cache-Control: no-cache\r\n"
-	"Connection: close\r\n"
-	"Content-Type: text/html\r\n"
-    "Set-Cookie: %s=%s; Expires=Thu, 01-Jan-1970 00:00:01 GMT; path=/\r\n"
-    "Refresh: 5\r\n"
-	"\r\n"
-	"<html><body><h1>Eat this cookie !</h1></body></html>\n";
-
-const char *HTTP_COOKIE_AUTH_JS =
-	"HTTP/1.0 200 OK\r\n"
-	"Cache-Control: no-cache\r\n"
-	"Connection: close\r\n"
-	"Content-Type: text/html\r\n"
-    "Refresh: 10\r\n"
-	"\r\n"
-	"<html>\n"
-    "<head>\n"
-    "<script>\n"
-    "function setCookie()\n"
-    "{\n"
-    "document.cookie='%s=%lu';\n"
-    "}\n"
-    "</script>\n"
-    "</head>\n"
-    "<body onload=\"setCookie()\">"
-    "<h1 align=center>Checking if You are a human</h1>"
-    "<noscript>Prosimy o włączenie JavaScript by uzyskać dostęp do tej stony.</noscript>"
-    "</body>"
-    "</html>\n";
-
 /* List head of all known action keywords for "http-request" */
 struct http_req_action_kw_list http_req_keywords = {
        .list = LIST_HEAD_INIT(http_req_keywords.list)
@@ -1481,7 +1449,7 @@ unsigned int get_number(struct session *s, unsigned long *secret) {
         return 0;
 }
     
-int cookie_auth(struct session *s)
+int cookie_auth(struct session *s, char *cookie_name, int cookie_name_len)
 {
     unsigned long knumer;
 	struct http_txn *txn = &s->txn;
@@ -1501,24 +1469,25 @@ int cookie_auth(struct session *s)
             p = memchr(h, '=', end-h);
             if (!p || p == h)
                 return 0;
-            p++;
             
             tmp = find_cookie_value_end(p, end);
 
-            if((p-h) != sizeof("name")) {
+            if((p-h) != cookie_name_len) {
                 h=tmp+2;
                 continue;
             }
-            
-            if((0==memcmp("name", h, sizeof("name")-1))) {
-                knumer=strtoul(p, &tmp, 10);
 
+            p++;
+
+            if((0==memcmp(cookie_name, h, cookie_name_len-1))) {
+                knumer=strtoul(p, &tmp, 10);
+                /*
                 chunk_printf(&trash, "cookie_secret=%lu\n", cookie_secret);
                 write(1, trash.str, trash.len);
-    
+
                 chunk_printf(&trash, "old_cookie_secret=%lu\n", old_cookie_secret);
                 write(1, trash.str, trash.len);
-                
+                */
                 if(get_number(s, &cookie_secret) == knumer)
                     return 1;
 
@@ -1526,7 +1495,6 @@ int cookie_auth(struct session *s)
                     return 1;
                 
             }
-
             h=tmp+2;
         }
     }
@@ -3341,10 +3309,8 @@ http_req_get_intercept_rule(struct proxy *px, struct list *rules, struct session
 			return HTTP_RULE_RES_ABRT;
 
 		case HTTP_REQ_ACT_COOKIE_AUTH:
-		//chunk_printf(&trash,
-		//	     "Set-Cookie: %s=; Expires=Thu, 01-Jan-1970 00:00:01 GMT; path=/",
-		//	     s->be->cookie_name);
-    		chunk_printf(&trash, HTTP_COOKIE_AUTH_JS, "name", get_number(s, &cookie_secret));
+            chunk_printf(&trash, px->cookie_auth_template ? px->cookie_auth_template : DEFAULT_HTTP_COOKIE_AUTH, \
+                        px->cookie_auth_name ? px->cookie_auth_name:DEFAULT_COOKIE_AUTH_NAME, get_number(s, &cookie_secret));
     		txn->status = 200;
     		stream_int_retnclose(&s->si[0], &trash);
 			return HTTP_RULE_RES_ABRT;
@@ -10439,7 +10405,8 @@ smp_fetch_cookie_auth(struct proxy *px, struct session *l4, void *l7, unsigned i
 */
 	CHECK_HTTP_MESSAGE_FIRST();
 
-	if (!cookie_auth(l4))
+	if (!cookie_auth(l4, px->cookie_auth_name ? px->cookie_auth_name:DEFAULT_COOKIE_AUTH_NAME,\
+                    px->cookie_auth_name ? px->cookie_auth_name_len:sizeof(DEFAULT_COOKIE_AUTH_NAME)-1) )
 		return 0;
 
 	smp->type = SMP_T_BOOL;

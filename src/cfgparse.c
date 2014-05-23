@@ -5374,6 +5374,74 @@ stats_error_parsing:
 				goto out;
 		}
 	}
+	else if (!strcmp(args[0], "cookie_auth")) {
+        if (rc == PR_CAP_BE) {
+            Alert("parsing [%s:%d] : '%s' is allowed only in backend section.\n", file, linenum, args[0]);
+		    err_code |= ERR_ALERT | ERR_FATAL;
+		    goto out;
+        }
+		if (!strcmp(args[1], "name")) {
+			if (*args[2]) {
+                free(curproxy->cookie_auth_name);
+                curproxy->cookie_auth_name=strdup(args[2]);
+                curproxy->cookie_auth_name_len=strlen(curproxy->cookie_auth_name);
+            }
+            else {
+                Alert("parsing [%s:%d] : '%s %s' expects <string>\n",
+				      file, linenum, args[0], args[1]);
+				      err_code |= ERR_ALERT | ERR_FATAL;
+				      goto out;
+			}
+		}
+        else if (!strcmp(args[1], "template")) {
+    		int templatelen, readlen, fd;
+    		char *template;
+    		struct stat stat;
+            
+    		fd = open(args[2], O_RDONLY);
+    		if ((fd < 0) || (fstat(fd, &stat) < 0)) {
+    			Alert("parsing [%s:%d] : error opening file <%s> for custom cookie template <%s>.\n",
+    			      file, linenum, args[2], args[1]);
+    			if (fd >= 0)
+    				close(fd);
+    			err_code |= ERR_ALERT | ERR_FATAL;
+    			goto out;
+    		}
+
+            templatelen = stat.st_size;
+            
+    		if (stat.st_size <= global.tune.bufsize) {
+                templatelen = stat.st_size;
+    		} else {
+    			Warning("parsing [%s:%d] : custom cookie_auth template file <%s> larger than %d bytes. Truncating.\n",
+    				file, linenum, args[2], global.tune.bufsize);
+    			err_code |= ERR_WARN;
+    			//errlen = global.tune.bufsize;
+    		}
+            
+    		template = malloc(templatelen + 1); /* malloc() must succeed during parsing */
+    		readlen = read(fd, template, templatelen);
+    		if (readlen != templatelen) {
+    			Alert("parsing [%s:%d] : error reading file <%s> for custom cookie_auth template <%s>.\n",
+    			      file, linenum, args[2], args[1]);
+    			close(fd);
+    			free(template);
+    			err_code |= ERR_ALERT | ERR_FATAL;
+    			goto out;
+    		}
+    		close(fd);
+            free(proxy->cookie_auth_template);
+
+            template[templatelen]='\0';
+            proxy->cookie_auth_template=template;
+        }
+		else {
+			Alert("parsing [%s:%d] : '%s' expects 'name'\n",
+			      file, linenum, args[0]);
+                  err_code |= ERR_ALERT | ERR_FATAL;
+			      goto out;
+		}
+	}
 	else {
 		struct cfg_kw_list *kwl;
 		int index;
