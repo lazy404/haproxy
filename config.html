@@ -1,0 +1,1527 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta name="generator" content="Docutils 0.11: http://docutils.sourceforge.net/" />
+<title>Guidelines for HAProxy termination in AWS</title>
+<style type="text/css">
+
+/*
+:Author: David Goodger (goodger@python.org)
+:Id: $Id: html4css1.css 7614 2013-02-21 15:55:51Z milde $
+:Copyright: This stylesheet has been placed in the public domain.
+
+Default cascading style sheet for the HTML output of Docutils.
+
+See http://docutils.sf.net/docs/howto/html-stylesheets.html for how to
+customize this style sheet.
+*/
+
+/* used to remove borders from tables and images */
+.borderless, table.borderless td, table.borderless th {
+  border: 0 }
+
+table.borderless td, table.borderless th {
+  /* Override padding for "table.docutils td" with "! important".
+     The right padding separates the table cells. */
+  padding: 0 0.5em 0 0 ! important }
+
+.first {
+  /* Override more specific margin styles with "! important". */
+  margin-top: 0 ! important }
+
+.last, .with-subtitle {
+  margin-bottom: 0 ! important }
+
+.hidden {
+  display: none }
+
+a.toc-backref {
+  text-decoration: none ;
+  color: black }
+
+blockquote.epigraph {
+  margin: 2em 5em ; }
+
+dl.docutils dd {
+  margin-bottom: 0.5em }
+
+object[type="image/svg+xml"], object[type="application/x-shockwave-flash"] {
+  overflow: hidden;
+}
+
+/* Uncomment (and remove this text!) to get bold-faced definition list terms
+dl.docutils dt {
+  font-weight: bold }
+*/
+
+div.abstract {
+  margin: 2em 5em }
+
+div.abstract p.topic-title {
+  font-weight: bold ;
+  text-align: center }
+
+div.admonition, div.attention, div.caution, div.danger, div.error,
+div.hint, div.important, div.note, div.tip, div.warning {
+  margin: 2em ;
+  border: medium outset ;
+  padding: 1em }
+
+div.admonition p.admonition-title, div.hint p.admonition-title,
+div.important p.admonition-title, div.note p.admonition-title,
+div.tip p.admonition-title {
+  font-weight: bold ;
+  font-family: sans-serif }
+
+div.attention p.admonition-title, div.caution p.admonition-title,
+div.danger p.admonition-title, div.error p.admonition-title,
+div.warning p.admonition-title, .code .error {
+  color: red ;
+  font-weight: bold ;
+  font-family: sans-serif }
+
+/* Uncomment (and remove this text!) to get reduced vertical space in
+   compound paragraphs.
+div.compound .compound-first, div.compound .compound-middle {
+  margin-bottom: 0.5em }
+
+div.compound .compound-last, div.compound .compound-middle {
+  margin-top: 0.5em }
+*/
+
+div.dedication {
+  margin: 2em 5em ;
+  text-align: center ;
+  font-style: italic }
+
+div.dedication p.topic-title {
+  font-weight: bold ;
+  font-style: normal }
+
+div.figure {
+  margin-left: 2em ;
+  margin-right: 2em }
+
+div.footer, div.header {
+  clear: both;
+  font-size: smaller }
+
+div.line-block {
+  display: block ;
+  margin-top: 1em ;
+  margin-bottom: 1em }
+
+div.line-block div.line-block {
+  margin-top: 0 ;
+  margin-bottom: 0 ;
+  margin-left: 1.5em }
+
+div.sidebar {
+  margin: 0 0 0.5em 1em ;
+  border: medium outset ;
+  padding: 1em ;
+  background-color: #ffffee ;
+  width: 40% ;
+  float: right ;
+  clear: right }
+
+div.sidebar p.rubric {
+  font-family: sans-serif ;
+  font-size: medium }
+
+div.system-messages {
+  margin: 5em }
+
+div.system-messages h1 {
+  color: red }
+
+div.system-message {
+  border: medium outset ;
+  padding: 1em }
+
+div.system-message p.system-message-title {
+  color: red ;
+  font-weight: bold }
+
+div.topic {
+  margin: 2em }
+
+h1.section-subtitle, h2.section-subtitle, h3.section-subtitle,
+h4.section-subtitle, h5.section-subtitle, h6.section-subtitle {
+  margin-top: 0.4em }
+
+h1.title {
+  text-align: center }
+
+h2.subtitle {
+  text-align: center }
+
+hr.docutils {
+  width: 75% }
+
+img.align-left, .figure.align-left, object.align-left {
+  clear: left ;
+  float: left ;
+  margin-right: 1em }
+
+img.align-right, .figure.align-right, object.align-right {
+  clear: right ;
+  float: right ;
+  margin-left: 1em }
+
+img.align-center, .figure.align-center, object.align-center {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.align-left {
+  text-align: left }
+
+.align-center {
+  clear: both ;
+  text-align: center }
+
+.align-right {
+  text-align: right }
+
+/* reset inner alignment in figures */
+div.align-right {
+  text-align: inherit }
+
+/* div.align-center * { */
+/*   text-align: left } */
+
+ol.simple, ul.simple {
+  margin-bottom: 1em }
+
+ol.arabic {
+  list-style: decimal }
+
+ol.loweralpha {
+  list-style: lower-alpha }
+
+ol.upperalpha {
+  list-style: upper-alpha }
+
+ol.lowerroman {
+  list-style: lower-roman }
+
+ol.upperroman {
+  list-style: upper-roman }
+
+p.attribution {
+  text-align: right ;
+  margin-left: 50% }
+
+p.caption {
+  font-style: italic }
+
+p.credits {
+  font-style: italic ;
+  font-size: smaller }
+
+p.label {
+  white-space: nowrap }
+
+p.rubric {
+  font-weight: bold ;
+  font-size: larger ;
+  color: maroon ;
+  text-align: center }
+
+p.sidebar-title {
+  font-family: sans-serif ;
+  font-weight: bold ;
+  font-size: larger }
+
+p.sidebar-subtitle {
+  font-family: sans-serif ;
+  font-weight: bold }
+
+p.topic-title {
+  font-weight: bold }
+
+pre.address {
+  margin-bottom: 0 ;
+  margin-top: 0 ;
+  font: inherit }
+
+pre.literal-block, pre.doctest-block, pre.math, pre.code {
+  margin-left: 2em ;
+  margin-right: 2em }
+
+pre.code .ln { color: grey; } /* line numbers */
+pre.code, code { background-color: #eeeeee }
+pre.code .comment, code .comment { color: #5C6576 }
+pre.code .keyword, code .keyword { color: #3B0D06; font-weight: bold }
+pre.code .literal.string, code .literal.string { color: #0C5404 }
+pre.code .name.builtin, code .name.builtin { color: #352B84 }
+pre.code .deleted, code .deleted { background-color: #DEB0A1}
+pre.code .inserted, code .inserted { background-color: #A3D289}
+
+span.classifier {
+  font-family: sans-serif ;
+  font-style: oblique }
+
+span.classifier-delimiter {
+  font-family: sans-serif ;
+  font-weight: bold }
+
+span.interpreted {
+  font-family: sans-serif }
+
+span.option {
+  white-space: nowrap }
+
+span.pre {
+  white-space: pre }
+
+span.problematic {
+  color: red }
+
+span.section-subtitle {
+  /* font-size relative to parent (h1..h6 element) */
+  font-size: 80% }
+
+table.citation {
+  border-left: solid 1px gray;
+  margin-left: 1px }
+
+table.docinfo {
+  margin: 2em 4em }
+
+table.docutils {
+  margin-top: 0.5em ;
+  margin-bottom: 0.5em }
+
+table.footnote {
+  border-left: solid 1px black;
+  margin-left: 1px }
+
+table.docutils td, table.docutils th,
+table.docinfo td, table.docinfo th {
+  padding-left: 0.5em ;
+  padding-right: 0.5em ;
+  vertical-align: top }
+
+table.docutils th.field-name, table.docinfo th.docinfo-name {
+  font-weight: bold ;
+  text-align: left ;
+  white-space: nowrap ;
+  padding-left: 0 }
+
+/* "booktabs" style (no vertical lines) */
+table.docutils.booktabs {
+  border: 0px;
+  border-top: 2px solid;
+  border-bottom: 2px solid;
+  border-collapse: collapse;
+}
+table.docutils.booktabs * {
+  border: 0px;
+}
+table.docutils.booktabs th {
+  border-bottom: thin solid;
+  text-align: left;
+}
+
+h1 tt.docutils, h2 tt.docutils, h3 tt.docutils,
+h4 tt.docutils, h5 tt.docutils, h6 tt.docutils {
+  font-size: 100% }
+
+ul.auto-toc {
+  list-style-type: none }
+
+</style>
+</head>
+<body>
+<div class="document" id="guidelines-for-haproxy-termination-in-aws">
+<h1 class="title">Guidelines for HAProxy termination in AWS</h1>
+
+<div class="sidebar">
+<p class="first sidebar-title">Document status</p>
+<blockquote>
+<table border="1" class="docutils">
+<colgroup>
+<col width="20%" />
+<col width="9%" />
+<col width="18%" />
+<col width="31%" />
+<col width="22%" />
+</colgroup>
+<thead valign="bottom">
+<tr><th class="head" colspan="2"><span class="st-red">NOT READY</span></th>
+<th class="head" colspan="3">$Revision:        $ &#64; 2014-05-16 09:43 EDT</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr><td><strong>Author</strong></td>
+<td colspan="2">Julien Vehent</td>
+<td><strong>Review</strong></td>
+<td>CloudOps</td>
+</tr>
+</tbody>
+</table>
+</blockquote>
+<div class="contents last topic" id="table-of-contents">
+<p class="topic-title first"><strong>Table of contents</strong></p>
+<ul class="auto-toc simple">
+<li><a class="reference internal" href="#summary-scope" id="id1">1&nbsp;&nbsp;&nbsp;Summary &amp; Scope</a></li>
+<li><a class="reference internal" href="#architecture" id="id2">2&nbsp;&nbsp;&nbsp;Architecture</a></li>
+<li><a class="reference internal" href="#proxy-protocol-between-elb-and-haproxy" id="id3">3&nbsp;&nbsp;&nbsp;PROXY protocol between ELB and HAProxy</a><ul class="auto-toc">
+<li><a class="reference internal" href="#elb-configuration" id="id4">3.1&nbsp;&nbsp;&nbsp;ELB Configuration</a></li>
+<li><a class="reference internal" href="#haproxy-frontend" id="id5">3.2&nbsp;&nbsp;&nbsp;HAProxy frontend</a></li>
+<li><a class="reference internal" href="#ssl-tls-configuration" id="id6">3.3&nbsp;&nbsp;&nbsp;SSL/TLS Configuration</a></li>
+<li><a class="reference internal" href="#healthchecks-between-elb-and-haproxy" id="id7">3.4&nbsp;&nbsp;&nbsp;Healthchecks between ELB and HAProxy</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#elb-logging" id="id8">4&nbsp;&nbsp;&nbsp;ELB Logging</a></li>
+<li><a class="reference internal" href="#haproxy-logging" id="id9">5&nbsp;&nbsp;&nbsp;HAProxy Logging</a><ul class="auto-toc">
+<li><a class="reference internal" href="#unique-request-id" id="id10">5.1&nbsp;&nbsp;&nbsp;Unique request ID</a></li>
+<li><a class="reference internal" href="#capturing-headers-and-cookies" id="id11">5.2&nbsp;&nbsp;&nbsp;Capturing headers and cookies</a></li>
+<li><a class="reference internal" href="#logging-in-a-separate-frontend" id="id12">5.3&nbsp;&nbsp;&nbsp;Logging in a separate frontend</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#rate-limiting-ddos-protection" id="id13">6&nbsp;&nbsp;&nbsp;Rate limiting &amp; DDoS protection</a><ul class="auto-toc">
+<li><a class="reference internal" href="#automated-rate-limiting" id="id14">6.1&nbsp;&nbsp;&nbsp;Automated rate limiting</a></li>
+<li><a class="reference internal" href="#querying-tables-state-in-real-time" id="id15">6.2&nbsp;&nbsp;&nbsp;Querying tables state in real time</a></li>
+<li><a class="reference internal" href="#blacklists-whitelists" id="id16">6.3&nbsp;&nbsp;&nbsp;Blacklists &amp; Whitelists</a></li>
+<li><a class="reference internal" href="#protect-against-slow-clients-slowloris-attack" id="id17">6.4&nbsp;&nbsp;&nbsp;Protect against slow clients (Slowloris attack)</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#url-filtering-with-acls" id="id18">7&nbsp;&nbsp;&nbsp;URL filtering with ACLs</a><ul class="auto-toc">
+<li><a class="reference internal" href="#filtering-url-parameters-on-get-requests" id="id19">7.1&nbsp;&nbsp;&nbsp;Filtering URL parameters on GET requests</a></li>
+<li><a class="reference internal" href="#filtering-payloads-on-post-requests" id="id20">7.2&nbsp;&nbsp;&nbsp;Filtering payloads on POST requests</a></li>
+<li><a class="reference internal" href="#marking-instead-of-blocking" id="id21">7.3&nbsp;&nbsp;&nbsp;Marking instead of blocking</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#haproxy-management" id="id22">8&nbsp;&nbsp;&nbsp;HAProxy management</a><ul class="auto-toc">
+<li><a class="reference internal" href="#enabling-the-stat-socket" id="id23">8.1&nbsp;&nbsp;&nbsp;Enabling the stat socket</a></li>
+<li><a class="reference internal" href="#collecting-statistics" id="id24">8.2&nbsp;&nbsp;&nbsp;Collecting statistics</a></li>
+<li><a class="reference internal" href="#analyzing-errors" id="id25">8.3&nbsp;&nbsp;&nbsp;Analyzing errors</a></li>
+<li><a class="reference internal" href="#parsing-performance-metrics-from-the-logs" id="id26">8.4&nbsp;&nbsp;&nbsp;Parsing performance metrics from the logs</a></li>
+<li><a class="reference internal" href="#soft-reload" id="id27">8.5&nbsp;&nbsp;&nbsp;Soft reload</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#full-haproxy-configuration" id="id28">9&nbsp;&nbsp;&nbsp;Full HAProxy configuration</a></li>
+<li><a class="reference internal" href="#building-process" id="id29">10&nbsp;&nbsp;&nbsp;Building process</a><ul class="auto-toc">
+<li><a class="reference internal" href="#static-build" id="id30">10.1&nbsp;&nbsp;&nbsp;Static build</a></li>
+<li><a class="reference internal" href="#dynamic-build" id="id31">10.2&nbsp;&nbsp;&nbsp;Dynamic build</a></li>
+<li><a class="reference internal" href="#rpm-build" id="id32">10.3&nbsp;&nbsp;&nbsp;RPM build</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<div class="section" id="summary-scope">
+<h1><a class="toc-backref" href="#id1">1&nbsp;&nbsp;&nbsp;Summary &amp; Scope</a></h1>
+<p>This document explains how HAProxy and Elastic Load Balancer can be used in
+Amazon Web Services to provide performant and secure termination of traffic
+to an API service. The goal is to provide the following features:</p>
+<ul class="simple">
+<li><strong>DDoS Protection</strong>: we use HAProxy to mitigate low to medium DDoS attacks, with
+sane limits and custom blacklist.</li>
+<li><strong>Application firewall</strong>:  we perform a first level of filtering in HAProxy, that
+protects NodeJS against all sorts of attack, known and to come. This will be done
+by inserting a set of regexes in HAProxy ACLs, that get updated when the
+application routes are updated. Note that managing these ACLs will not impact
+uptime, or require redeployment.</li>
+<li><strong>SSL/TLS</strong>: ELBs support the PROXY protocol, and so does HAProxy, which allows us
+to proxy the tcp connection to HAProxy. It gives us better TLS, backed by
+OpenSSL, at the cost of managing the TLS keys on the HAProxy instances.</li>
+<li><strong>Logging</strong>: ELBs have limited support for logging. HAProxy, however, has excellent
+logging for TCP, SSL and HTTPS. We leverage the flexibility of HAProxy's logging
+to improve our DDoS detection capabilities. We also want to uniquely identify
+requests in HAProxy and NodeJS, and correlate events, using a <cite>unique-id</cite>.</li>
+</ul>
+</div>
+<div class="section" id="architecture">
+<h1><a class="toc-backref" href="#id2">2&nbsp;&nbsp;&nbsp;Architecture</a></h1>
+<p>Below is our target setup:</p>
+<img alt="architecture diagram" src="haproxy-aws-arch-diagram.png" />
+</div>
+<div class="section" id="proxy-protocol-between-elb-and-haproxy">
+<h1><a class="toc-backref" href="#id3">3&nbsp;&nbsp;&nbsp;PROXY protocol between ELB and HAProxy</a></h1>
+<p>This configuration uses an Elastic Load Balancer in TCP mode, with PROXY
+protocol enabled. The PROXY protocol adds a string at the beginning of the TCP
+payload that is passed to the backend. This string contains the IP of the client
+that connected to the ELB, which allows HAProxy to feed its internal state with
+this information, and act as if it had a direct TCP connection to the client.</p>
+<p>For more information on the PROXY protocol, see
+<a class="reference external" href="http://haproxy.1wt.eu/download/1.5/doc/proxy-protocol.txt">http://haproxy.1wt.eu/download/1.5/doc/proxy-protocol.txt</a></p>
+<p>First, we need to create an ELB, and enable a TCP listener on port 443 that
+supports the PROXY protocol. The ELB will not decipher the SSL, but instead pass
+the entire TCP payload down to Haproxy.</p>
+<div class="section" id="elb-configuration">
+<h2><a class="toc-backref" href="#id4">3.1&nbsp;&nbsp;&nbsp;ELB Configuration</a></h2>
+<p>PROXY protocol support must be enabled on the ELB.</p>
+<pre class="code bash literal-block">
+<span class="name variable">$ </span>./elb-describe-lb-policy-types -I AKIA... -S Ww1... --region us-east-1
+POLICY_TYPE  ProxyProtocolPolicyType    Policy that controls whether to include the
+                                        IP address and port of the originating request
+                                        <span class="keyword">for </span>TCP messages. This policy operates on
+                                        TCP/SSL listeners only
+</pre>
+<p>The policy name we want to enable is <cite>ProxyProtocolPolicyType</cite>. We need the load
+balancer name for that, and the following command:</p>
+<pre class="code bash literal-block">
+<span class="name variable">$ </span>./elb-create-lb-policy elb123-testproxyprotocol <span class="literal string escape">\
+</span>--policy-name EnableProxyProtocol <span class="literal string escape">\
+</span>--policy-type ProxyProtocolPolicyType <span class="literal string escape">\
+</span>--attribute <span class="literal string double">&quot;name=ProxyProtocol, value=true&quot;</span> <span class="literal string escape">\
+</span>-I AKIA... -S Ww1... --region us-east-1
+
+OK-Creating LoadBalancer Policy
+
+
+<span class="name variable">$ </span>./elb-set-lb-policies-for-backend-server elb123-testproxyprotocol <span class="literal string escape">\
+</span>--policy-names EnableProxyProtocol <span class="literal string escape">\
+</span>--instance-port 443 <span class="literal string escape">\
+</span>-I AKIA... -S Ww1... --region us-east-1
+
+OK-Setting Policies
+</pre>
+<p>Now configure a listener on TCP/443 on that ELB, that points to TCP/443 on the
+HAProxy instance. On the instance side, make sure that your security group
+accepts traffic from the ELB security group on port 443.</p>
+</div>
+<div class="section" id="haproxy-frontend">
+<h2><a class="toc-backref" href="#id5">3.2&nbsp;&nbsp;&nbsp;HAProxy frontend</a></h2>
+<p>The HAProxy frontend listens on port 443 with a SSL configuration, as follow:</p>
+<pre class="code literal-block">
+frontend https
+        bind 0.0.0.0:443 accept-proxy ssl ......
+</pre>
+<p>Note the <cite>accept-proxy</cite> parameter of the bind command. This option tells HAProxy
+that whatever sits in front of it will append the PROXY header to TCP payloads.</p>
+</div>
+<div class="section" id="ssl-tls-configuration">
+<h2><a class="toc-backref" href="#id6">3.3&nbsp;&nbsp;&nbsp;SSL/TLS Configuration</a></h2>
+<p>HAProxy takes a SSL configuration on the <cite>bind</cite> line directly. The configuration
+requires a set of certificates and private key, and a ciphersuite.</p>
+<pre class="code literal-block">
+bind 0.0.0.0:443 accept-proxy ssl crt /etc/haproxy/bundle.pem ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-DSS-AES128-GCM-SHA256:kEDH+AESGCM:ECDHE-RSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES256-SHA384:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA:ECDHE-ECDSA-AES256-SHA:DHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA:DHE-DSS-AES128-SHA256:DHE-RSA-AES256-SHA256:DHE-DSS-AES256-SHA:DHE-RSA-AES256-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:ECDHE-RSA-RC4-SHA:ECDHE-ECDSA-RC4-SHA:AES128:AES256:RC4-SHA:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!3DES:!MD5:!PSK
+</pre>
+<p>Unlike most servers (Apache, Nginx, ...), HAProxy takes certificates and keys
+into a single file, here named <cite>bundle.pem</cite>. In this file are concatenated the
+server private key, the server public certificate, the CA intermediate
+certificate (if any) and a DH parameter (if any). For more information on DH
+parameters, see <a class="reference external" href="https://wiki.mozilla.org/Security/Server_Side_TLS">https://wiki.mozilla.org/Security/Server_Side_TLS</a> .</p>
+<p>In the sample below, components of <cite>bundle.pem</cite> are concatenated as follow:</p>
+<ul class="simple">
+<li>client certificate signed by CA XYZ</li>
+<li>client private key</li>
+<li>public DH parameter (2048 bits)</li>
+<li>intermediate certificate of CA XYZ</li>
+</ul>
+<pre class="code literal-block">
+-----BEGIN CERTIFICATE-----
+MIIGYjCCBUqgAwIBAgIDDD5PMA0GCSqGSIb3DQEBBQUAMIGMMQswCQYDVQQGEwJJ
+...
+ej2w/mPv
+-----END CERTIFICATE-----
+-----BEGIN RSA PRIVATE KEY-----
+MIIEpAIBAAKCAQEAvJQqCjE4I63S3kR9KV0EG9e/lX/bZxa/2QVvZGi9/Suj65nD
+...
+RMSEpg+wuIVnKUi6KThiMKyXfZaTX7BDuR/ezE/JHs1TN5Hkw43TCQ==
+-----END RSA PRIVATE KEY-----
+-----BEGIN DH PARAMETERS-----
+MIICCAKCAgEA51RNlgY6j9MhmDURTpzydlJOsjk/TpU1BiY028SXAppuKJeFcx9S
+...
+HgHeuQQRjuv+h+Wf4dBe2f/fU5w9Osvq299vtcCjvQ7EtZTKT8RfvIMCAQI=
+-----END DH PARAMETERS-----
+-----BEGIN CERTIFICATE-----
+MIIGNDCCBBygAwIBAgIBGDANBgkqhkiG9w0BAQUFADB9MQswCQYDVQQGEwJJTDEW
+...
+0q6Dp6jOW6c=
+-----END CERTIFICATE-----
+</pre>
+<p>The rest of the <cite>bind</cite> line is a ciphersuite, taken from
+<a class="reference external" href="https://wiki.mozilla.org/Security/Server_Side_TLS">https://wiki.mozilla.org/Security/Server_Side_TLS</a> .</p>
+<p>We can verify the configuration using <cite>cipherscan</cite>. Below is the expected output
+for our configuration:</p>
+<pre class="code bash literal-block">
+<span class="name variable">$ </span>./cipherscan haproxytest1234.elb.amazonaws.com
+.........................
+prio  ciphersuite                  protocols                    pfs_keysize
+1     ECDHE-RSA-AES128-GCM-SHA256  SSLv3,TLSv1,TLSv1.1,TLSv1.2  ECDH,P-256,256bits
+2     ECDHE-RSA-AES256-GCM-SHA384  SSLv3,TLSv1,TLSv1.1,TLSv1.2  ECDH,P-256,256bits
+3     DHE-RSA-AES128-GCM-SHA256    SSLv3,TLSv1,TLSv1.1,TLSv1.2  DH,2048bits
+4     DHE-RSA-AES256-GCM-SHA384    SSLv3,TLSv1,TLSv1.1,TLSv1.2  DH,2048bits
+5     ECDHE-RSA-AES128-SHA256      SSLv3,TLSv1,TLSv1.1,TLSv1.2  ECDH,P-256,256bits
+6     ECDHE-RSA-AES128-SHA         SSLv3,TLSv1,TLSv1.1,TLSv1.2  ECDH,P-256,256bits
+7     ECDHE-RSA-AES256-SHA384      SSLv3,TLSv1,TLSv1.1,TLSv1.2  ECDH,P-256,256bits
+8     ECDHE-RSA-AES256-SHA         SSLv3,TLSv1,TLSv1.1,TLSv1.2  ECDH,P-256,256bits
+9     DHE-RSA-AES128-SHA256        SSLv3,TLSv1,TLSv1.1,TLSv1.2  DH,2048bits
+10    DHE-RSA-AES128-SHA           SSLv3,TLSv1,TLSv1.1,TLSv1.2  DH,2048bits
+11    DHE-RSA-AES256-SHA256        SSLv3,TLSv1,TLSv1.1,TLSv1.2  DH,2048bits
+12    DHE-RSA-AES256-SHA           SSLv3,TLSv1,TLSv1.1,TLSv1.2  DH,2048bits
+13    AES128-GCM-SHA256            SSLv3,TLSv1,TLSv1.1,TLSv1.2
+14    AES256-GCM-SHA384            SSLv3,TLSv1,TLSv1.1,TLSv1.2
+15    ECDHE-RSA-RC4-SHA            SSLv3,TLSv1,TLSv1.1,TLSv1.2  ECDH,P-256,256bits
+16    AES128-SHA256                SSLv3,TLSv1,TLSv1.1,TLSv1.2
+17    AES128-SHA                   SSLv3,TLSv1,TLSv1.1,TLSv1.2
+18    AES256-SHA256                SSLv3,TLSv1,TLSv1.1,TLSv1.2
+19    AES256-SHA                   SSLv3,TLSv1,TLSv1.1,TLSv1.2
+20    RC4-SHA                      SSLv3,TLSv1,TLSv1.1,TLSv1.2
+21    DHE-RSA-CAMELLIA256-SHA      SSLv3,TLSv1,TLSv1.1,TLSv1.2  DH,2048bits
+22    CAMELLIA256-SHA              SSLv3,TLSv1,TLSv1.1,TLSv1.2
+23    DHE-RSA-CAMELLIA128-SHA      SSLv3,TLSv1,TLSv1.1,TLSv1.2  DH,2048bits
+24    CAMELLIA128-SHA              SSLv3,TLSv1,TLSv1.1,TLSv1.2
+</pre>
+</div>
+<div class="section" id="healthchecks-between-elb-and-haproxy">
+<h2><a class="toc-backref" href="#id7">3.4&nbsp;&nbsp;&nbsp;Healthchecks between ELB and HAProxy</a></h2>
+<p>As of writing of this document, it appears that ELBs do not use the proxy
+protocol when running healthchecks against an instance. As a result, these
+healthchecks cannot be handled by the <cite>https frontend</cite>, because HAProxy will
+fail when looking for a PROXY header that isn't there.</p>
+<p>The workaround is to create a secondary <cite>frontend</cite> in HAProxy that is entirely
+dedicated to answering healthchecks from the ELB.</p>
+<p>The configuration below uses the <cite>monitor</cite> option to check the health of the
+nodejs backend. If more than one server is alive in that backend, then our
+<cite>health</cite> frontend will return <cite>200 OK</cite>. If no server is alive, a <cite>503</cite> will be
+returned. All the ELB has to do is to query the URL at
+<a class="reference external" href="http://haproxy_host:34180/haproxy_status">http://haproxy_host:34180/haproxy_status</a> . To reduce the overhead, we also
+disable SSL on the health frontend.</p>
+<pre class="code literal-block">
+# frontend used to return health status without requiring SSL
+frontend health
+        bind 0.0.0.0:34180      # 34180 means EALTH ;)
+        # create a status URI in /haproxy_status that will return
+        # a 200 is backend is healthy, and 503 if it isn't. This
+        # URI is queried by the ELB.
+        acl backend_dead nbsrv(nodejs) lt 1
+        monitor-uri /haproxy_status
+        monitor fail if backend_dead
+</pre>
+<p><em>(note: we could also use ACLs in HAProxy to only expect the PROXY header on
+certain source IPs, but the approach of a dedicated health frontend seems
+cleaner)</em></p>
+</div>
+</div>
+<div class="section" id="elb-logging">
+<h1><a class="toc-backref" href="#id8">4&nbsp;&nbsp;&nbsp;ELB Logging</a></h1>
+<p>TODO</p>
+</div>
+<div class="section" id="haproxy-logging">
+<h1><a class="toc-backref" href="#id9">5&nbsp;&nbsp;&nbsp;HAProxy Logging</a></h1>
+<p>HAProxy supports custom log format, which we want here, as opposed to default
+log format, in order to capture TCP, SSL and HTTP information on a single line.</p>
+<p>For our logging, we want the following:</p>
+<ol class="arabic simple">
+<li>TCP/IP logs first, such that these are always present, even if HAProxy cuts
+the connection before processing the SSL or HTTP traffic</li>
+<li>SSL information</li>
+<li>HTTP information</li>
+</ol>
+<pre class="code literal-block">
+log-format [%pid]\ [%Ts.%ms]\ %ac/%fc/%bc/%bq/%sc/%sq/%rc\ %Tq/%Tw/%Tc/%Tr/%Tt\ %tsc\ %ci:%cp\ %fi:%fp\ %si:%sp\ %ft\ %sslc\ %sslv\ %{+Q}r\ %ST\ %b:%s\ &quot;%CC&quot;\ &quot;%hr&quot;\ &quot;%CS&quot;\ &quot;%hs&quot;\ req_size=%U\ resp_size=%B
+</pre>
+<p>The format above will generate:</p>
+<pre class="code literal-block">
+Mar 14 17:14:51 localhost haproxy[14887]: [14887] [1394817291.250] 10/5/2/0/3/0/0 48/0/0/624/672 ---- 1.10.2.10:35701 10.151.122.228:443 127.0.0.1:8000 logger - - &quot;GET /v1/ HTTP/1.0&quot; 404 fxa-nodejs:nodejs1 &quot;-&quot; &quot;{||ApacheBench/2.3|over-100-active-connections,over-100-connections-in-10-seconds,high-error-rate,high-request-rate,|47B4176E:8B75_0A977AE4:01BB_5323390B_31E0:3A27}&quot; &quot;-&quot; &quot;&quot; ireq_size=592 resp_size=787
+</pre>
+<p>The log-format contains very detailed information on the connection itself, but
+also on the state of haproxy itself. Below is a description of the fields we
+used in our custom log format.</p>
+<ul class="simple">
+<li><cite>%pid</cite>: process ID of HAProxy</li>
+<li><cite>%Ts.%ms</cite>: unix timestamp + milliseconds</li>
+<li><cite>%ac</cite>: total number of concurrent connections</li>
+<li><cite>%fc</cite>: total number of concurrent connections on the frontend</li>
+<li><cite>%bc</cite>: total number of concurrent connections on the backend</li>
+<li><cite>%bq</cite>: queue size of the backend</li>
+<li><cite>%sc</cite>: total number of concurrent connections on the server</li>
+<li><cite>%sq</cite>: queue size of the server</li>
+<li><cite>%rc</cite>: connection retries to the server</li>
+<li><cite>%Tq</cite>: total time to get the client request (HTTP mode only)</li>
+<li><cite>%Tw</cite>: total time spent in the queues waiting for a connection slot</li>
+<li><cite>%Tc</cite>: total time to establish the TCP connection to the server</li>
+<li><cite>%Tr</cite>: server response time (HTTP mode only)</li>
+<li><cite>%Tt</cite>: total session duration time, between the moment the proxy accepted it
+and the moment both ends were closed.</li>
+<li><cite>%tsc</cite>: termination state (see <cite>8.5. Session state at disconnection</cite>)</li>
+<li><cite>%ci:%cp</cite>: client IP and Port</li>
+<li><cite>%fi:%fp</cite>: frontend IP and Port</li>
+<li><cite>%si:%sp</cite>: server IP and Port</li>
+<li><cite>%ft</cite>: transport type of the frontend (with a ~ suffix for SSL)</li>
+<li><cite>%sslc %sslv</cite>: SSL cipher and version</li>
+<li><cite>%{+Q}r</cite>: HTTP request, between double quotes</li>
+<li><cite>%ST</cite>: HTTP status code</li>
+<li><cite>%b:%s</cite>: backend name and server name</li>
+<li><cite>%CC</cite>: captured request cookies</li>
+<li><cite>%hr</cite>: captured request headers</li>
+<li><cite>%CS</cite>: captured response cookies</li>
+<li><cite>%hs</cite>: captured response headers</li>
+<li><cite>%U</cite>: bytes read from the client (request size)</li>
+<li><cite>%B</cite>: bytes read from server to client (response size)</li>
+</ul>
+<p>For more details on the available logging variables, see the HAProxy
+configuration, under <cite>8.2.4. Custom log format</cite>.
+<a class="reference external" href="http://haproxy.1wt.eu/download/1.5/doc/configuration.txt">http://haproxy.1wt.eu/download/1.5/doc/configuration.txt</a></p>
+<div class="section" id="unique-request-id">
+<h2><a class="toc-backref" href="#id10">5.1&nbsp;&nbsp;&nbsp;Unique request ID</a></h2>
+<p>Tracking requests across multiple servers can be problematic, because the chain
+of events triggered by a request on the frontend are not tied to each other.
+HAProxy has a simple mechanism to insert a unique identifier to incoming
+requests, in the form of an ID inserted in the request headers, and passed to
+the backend server. This ID can then be logged by the backend server, and passed
+on to the next step. In a largely distributed environment, the unique ID makes
+tracking requests propagation a lot easier.</p>
+<p>The unique ID is declared on the HTTPS frontend as follow:</p>
+<pre class="code literal-block">
+# Insert a unique request identifier is the headers of the request
+# passed to the backend
+unique-id-format %{+X}o\ %ci:%cp_%fi:%fp_%Ts_%rt:%pid
+unique-id-header X-Unique-ID
+</pre>
+<p>This will add an ID that is composed of hexadecimal variables, taken from the
+client IP and port, frontend IP and port, timestamp, request counter and PID.
+An example of generated ID is <strong>485B7525:CB2F_0A977AE4:01BB_5319CB0C_000D:27C0</strong>.</p>
+<p>The Unique ID is added to the request headers passed to the backend in the
+<cite>X-Unique-ID</cite> header. We will also capture it in the logs, as a request header.</p>
+<blockquote>
+<pre class="literal-block">
+GET / HTTP/1.1
+Host: backendserver123.example.net
+User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:25.0) Gecko/20100101 Firefox/25.0
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+Accept-Language: en-US,en;q=0.5
+Accept-Encoding: gzip, deflate
+DNT: 1
+Cache-Control: max-age=0
+X-Unique-ID: 485B7525:CB70_0A977AE4:01BB_5319CD3F_0163:27C0
+X-Forwarded-For: 2.12.17.87
+</pre>
+</blockquote>
+</div>
+<div class="section" id="capturing-headers-and-cookies">
+<h2><a class="toc-backref" href="#id11">5.2&nbsp;&nbsp;&nbsp;Capturing headers and cookies</a></h2>
+<p>In the log format, we defined fields for the request and response headers and
+cookies. But, by default, this fields will show empty in the logs. In order to
+log headers and cookies, the <cite>capture</cite> parameters must be set in the
+frontend.</p>
+<p>Here is how we can capture headers sent by the client in the HTTP request.</p>
+<pre class="code literal-block">
+    capture request header Referrer len 64
+capture request header Content-Length len 10
+    capture request header User-Agent len 64
+</pre>
+<p>Cookies can be captures the same way:</p>
+<pre class="code literal-block">
+capture cookie mycookie123=  len 32
+</pre>
+<p>HAProxy will also add custom headers to the request, before passing it to the
+backend. However, added headers don't get logged, because the addition happens
+after the capture operation. To fix this issue, we are going to create a new
+frontend dedicated to logging.</p>
+</div>
+<div class="section" id="logging-in-a-separate-frontend">
+<h2><a class="toc-backref" href="#id12">5.3&nbsp;&nbsp;&nbsp;Logging in a separate frontend</a></h2>
+<p>During processing of the request, we added custom headers, and we want these
+headers to appear in the logs. One solution is to route all the request to a
+secondary frontend that only does logging, and blocking or forwarding.</p>
+<p>Classic setup:</p>
+<blockquote>
+<pre class="literal-block">
+                {logging}
+ request        +--------------+       +---------------+
++--------------&gt;|frontend      |+-----&gt;|backend        |      +---------+
+                |   fxa-https  |       |    fxa-nodejs |+----&gt;|         |
+                +--------------+       +---------------+      | NodeJS  |
+                                                              |         |
+                                                              +---------+
+</pre>
+</blockquote>
+<p>Setup with separate logging frontend:</p>
+<blockquote>
+<pre class="literal-block">
+                {no logging}
+ request        +--------------+       +---------------+
++--------------&gt;|frontend      |       |backend        |      +---------+
+                |   fxa-https  |       |    fxa-nodejs |+----&gt;|         |
+                +--------------+       +---------------+      | NodeJS  |
+                       +                     ^                |         |
+                       |                     |                +---------+
+                       |                     |
+                +------v-------+       +-----+--------+
+                |backend       |+-----&gt;|frontend      |
+                |     logger   |       |   logger     |
+                +--------------+       +--------------+
+                                         {logging}
+</pre>
+</blockquote>
+<p>At the end of the configuration of frontend <cite>fxa-https</cite>, instead of sending
+requests to backend <cite>fxa-nodejs</cite>, we send them to backend <cite>logger</cite>.</p>
+<pre class="code literal-block">
+frontend fxa-https
+        ...
+        # Don't log here, log into logger frontend
+        no log
+        default_backend logger
+</pre>
+<p>Then we declare a backend and a frontend for <cite>logger</cite>:</p>
+<pre class="code literal-block">
+backend logger
+        server localhost localhost:55555 send-proxy
+
+# frontend use to log acl activity
+frontend logger
+        bind localhost:55555 accept-proxy
+
+        ...
+
+        capture request header Referrer len 64
+        capture request header Content-Length len 10
+        capture request header User-Agent len 64
+        capture request header X-Haproxy-ACL len 256
+        capture request header X-Unique-ID len 64
+
+        # if previous ACL didn't pass and aren't whitelisted
+        acl whitelisted req.fhdr(X-Haproxy-ACL) -m beg whitelisted,
+        acl fail-validation req.fhdr(X-Haproxy-ACL) -m found
+        block if !whitelisted fail-validation
+
+        default_backend fxa-nodejs
+</pre>
+<p>Note the use of <cite>send-proxy</cite> and <cite>accept-proxy</cite> between the logger backend and
+frontend, allowing to keep the information about the client IP.</p>
+<p><strong>Isn't this slow and inefficient?</strong></p>
+<p>Well, obviously, routing request through HAProxy twice isn't the most elegant
+way of proxying. But in practice, this approach adds minimal overhead. Linux and
+HAProxy support TCP splicing, which provides zero-copy transfer of data between
+TCP sockets. When HAProxy forward the request to the logger socket, there is, in
+fact, no transfer of data at the kernel level. Benchmark it, it's fast!</p>
+</div>
+</div>
+<div class="section" id="rate-limiting-ddos-protection">
+<h1><a class="toc-backref" href="#id13">6&nbsp;&nbsp;&nbsp;Rate limiting &amp; DDoS protection</a></h1>
+<p>One of the particularity of operating an infrastructure in AWS, is that control
+over the network is very limited. Techniques such as BGP blackholing are not
+available. And visibility over the layer 3 (IP) and 4 (TCP) is reduced. Building
+protection against DDoS means that we need to block traffic further down the
+stack, which consumes more resources. This is the main motivation for using ELBs
+in TCP mode with the PROXY protocol: it gives HAProxy low-level access to the
+TCP connection, and visibility of the client IP before parsing HTTP headers
+(like you would traditionally do with X-Forwarded-For).</p>
+<p>ELBs have limited resources, but simplify the management of public IPs in AWS.
+By offloading the SSL &amp; HTTP processing to HAProxy, we reduce the pressure on
+ELB, while conserving the ability to manage the public endpoints through it.</p>
+<p>HAProxy maintains tons of detailed information on connections. One can use this
+information to accept, block or route connections. In the following section, we
+will discuss the use of ACLs and stick-tables to block clients that do not
+respect sane limits.</p>
+<div class="section" id="automated-rate-limiting">
+<h2><a class="toc-backref" href="#id14">6.1&nbsp;&nbsp;&nbsp;Automated rate limiting</a></h2>
+<p>The configuration below enable counters to track connections in a table where
+the key is the source IP of the client:</p>
+<pre class="code literal-block">
+# Define a table that will store IPs associated with counters
+stick-table type ip size 500k expire 30s store conn_cur,conn_rate(10s),http_req_rate(10s),http_err_rate(10s)
+
+# Enable tracking of src IP in the stick-table
+tcp-request content track-sc0 src
+</pre>
+<p>Let's decompose this configuration. First, we define a <cite>stick-table</cite> that
+stores IP addresses as keys. We define a maximum size for this table
+of 500,000 IPs, and we tell HAProxy to expire the records after 30 seconds. If
+the table gets filled, HAProxy will delete records following the LRU logic.</p>
+<p>The <cite>stick-table</cite> will store a number of information associated with the IP
+address:</p>
+<ul class="simple">
+<li><cite>conn_cur</cite> is a counter of the concurrent connection count for this IP.</li>
+<li><cite>conn_rate(10s)</cite> is a sliding window that counts new TCP connections over a 10
+seconds period</li>
+<li><cite>http_req_rate(10s)</cite> is a sliding window that counts HTTP requests over a 10
+seconds period</li>
+<li><cite>http_err_rate(10s)</cite> is a sliding window that counts HTTP errors triggered by
+requests from that IP over a 10 seconds period</li>
+</ul>
+<p>By default, the stick table declaration doesn't do anything, we need to send
+data to it. This is what the <cite>tcp-request content track-sc0 src</cite> parameter does.</p>
+<p>Now that we have tracking in place, we can write ACLs that run tests against the
+content of the table. The examples below evaluate several of these counters
+against arbitary limits. Tune these to your needs.</p>
+<pre class="code literal-block">
+# Reject the new connection if the client already has 100 opened
+http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]over-100-active-connections, if { src_conn_cur ge 100 }
+
+# Reject the new connection if the client has opened more than 100 connections in 10 seconds
+http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]over-100-connections-in-10-seconds, if { src_conn_rate ge 100 }
+
+# Reject the connection if the client has passed the HTTP error rate
+http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]high-error-rate, if { sc0_http_err_rate() gt 100 }
+
+# Reject the connection if the client has passed the HTTP request rate
+http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]high-request-rate, if { sc0_http_req_rate() gt 500 }
+</pre>
+<p>HAProxy provides a lot of flexibility on what can be tracked in a <cite>stick-table</cite>.
+Take a look at section <cite>7.3.2. Fetching samples at Layer 4</cite> from the doc to get
+a better idea.</p>
+</div>
+<div class="section" id="querying-tables-state-in-real-time">
+<h2><a class="toc-backref" href="#id15">6.2&nbsp;&nbsp;&nbsp;Querying tables state in real time</a></h2>
+<p>Tables are named after the name of the frontend or backend they live in. Our
+frontend called <cite>fxa-https</cite> will have a table called <cite>fxa-https</cite>, that can be
+queried through the stat socket:</p>
+<pre class="code literal-block">
+# echo &quot;show table fxa-https&quot; | socat unix:/var/lib/haproxy/stats -
+# table: fxa-https, type: ip, size:512000, used:1
+0x1aa3358: key=1.10.2.10 use=1 exp=29957 conn_rate(10000)=43 conn_cur=1 http_req_rate(10000)=42 http_err_rate(10000)=42
+</pre>
+<p>The line above shows a table entry for key <cite>1.10.2.10</cite>, which is a tracked IP
+address. The other entries on the line show the status of various counters that
+we defined in the configuration.</p>
+</div>
+<div class="section" id="blacklists-whitelists">
+<h2><a class="toc-backref" href="#id16">6.3&nbsp;&nbsp;&nbsp;Blacklists &amp; Whitelists</a></h2>
+<p>Blacklist and whitelists are simple lists of IP addresses that are checked by
+HAProxy as early on as possible. Blacklist are checked at the beginning of the
+TCP connection, which allows for early connection drops, and also means that
+blacklisting an IP always takes precedence over any other rule, including the
+whitelist.</p>
+<p>Whitelists are checked at the HTTP level, and allow to bypass ACLs and rate
+limiting.</p>
+<pre class="code literal-block">
+# Blacklist: Deny access to some IPs before anything else is checked
+tcp-request content reject if { src -f /etc/haproxy/blacklist.lst }
+
+# Whitelist: Allow IPs to bypass the filters
+http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]whitelisted, if { src -f /etc/haproxy/whitelist.lst }
+http-request allow if { src -f /etc/haproxy/whitelist.lst }
+</pre>
+<p>List files can contain IP addresses or networks in CIDR format.</p>
+<pre class="code literal-block">
+10.0.0.0/8
+172.16.0.0/12
+192.168.0.0/16
+8.8.8.8
+</pre>
+<p>List files are loaded into HAProxy at startup. If you add or remove IPs from a
+list, make sure to perform a soft reload.</p>
+<pre class="code bash literal-block">
+haproxy -f /etc/haproxy/haproxy.cfg -c <span class="operator">&amp;&amp;</span> sudo haproxy -f /etc/haproxy/haproxy.cfg -sf <span class="keyword">$(</span>pidof haproxy<span class="keyword">)</span>
+</pre>
+</div>
+<div class="section" id="protect-against-slow-clients-slowloris-attack">
+<h2><a class="toc-backref" href="#id17">6.4&nbsp;&nbsp;&nbsp;Protect against slow clients (Slowloris attack)</a></h2>
+<p>Slowloris is an attack where a client very slowly sends requests to the server,
+forcing it to allocate resources to that client that are only not used. This
+attack is commonly used in DDoS, by clients that send their requests characters
+by characters. HAProxy can block these clients, by allocating a maximum amount
+of time a client can take to send a full request. This is done with the <cite>timeout
+http-request</cite> parameter.</p>
+<pre class="code literal-block">
+# disconnect slow handshake clients early, protect from
+# resources exhaustion attacks
+timeout http-request 5s
+</pre>
+</div>
+</div>
+<div class="section" id="url-filtering-with-acls">
+<h1><a class="toc-backref" href="#id18">7&nbsp;&nbsp;&nbsp;URL filtering with ACLs</a></h1>
+<p>HAProxy has the ability to inspect requests before passing them to the backend.
+This is limited to query strings, and doesn't support inspecting the body of a
+POST request. But we can already leverage this to filter out unwanted traffic.</p>
+<p>The first thing we need, is a list of endpoints sorted by HTTP method. This can
+be obtained from the web application directly. Note that some endpoints, such as
+<cite>__heartbeat__</cite> should be limited to HAProxy, and thus blocked from clients.</p>
+<p>For now, let's ignore GET URL parameters, and only build a list of request
+paths, that we store in two files: one for GET requests, and one for POST
+requests.</p>
+<p><cite>get_endpoints.lst</cite></p>
+<pre class="code bash literal-block">
+/v1/
+/v1/account/devices
+/v1/account/keys
+/v1/complete_reset_password
+/v1/recovery_email/status
+/v1/verify_email
+/v1/.well-known/browserid
+/v1/.well-known/browserid/provision.html
+/v1/.well-known/browserid/sign_in.html
+</pre>
+<p><cite>post_endpoints.lst</cite></p>
+<pre class="code bash literal-block">
+/v1/account/create
+/v1/account/destroy
+/v1/account/login
+/v1/account/reset
+/v1/certificate/sign
+/v1/get_random_bytes
+/v1/password/change/finish
+/v1/password/change/start
+/v1/password/forgot/resend_code
+/v1/password/forgot/send_code
+/v1/password/forgot/verify_code
+/v1/recovery_email/resend_code
+/v1/recovery_email/verify_code
+/v1/session/destroy
+</pre>
+<p>In the HAProxy configuration, we can build ACLs around these files. The <cite>block</cite>
+method takes a condition, as described in the Haproxy documentation, section
+<cite>7.2. Using ACLs to form conditions</cite>.</p>
+<pre class="code literal-block">
+# Requests validation using ACLs ---
+acl valid-get path -f /etc/haproxy/get_endpoints.lst
+acl valid-post path -f /etc/haproxy/post_endpoints.lst
+
+# block requests that don't match the predefined endpoints
+block unless METH_GET valid-get or METH_POST valid-post
+</pre>
+<p><cite>block</cite> does the job, and return a 403 to the client. But if you want more
+visibility on ACL activity, you may want to use a custom header as describe
+later in this section.</p>
+<div class="section" id="filtering-url-parameters-on-get-requests">
+<h2><a class="toc-backref" href="#id19">7.1&nbsp;&nbsp;&nbsp;Filtering URL parameters on GET requests</a></h2>
+<p>While HAProxy supports regexes on URLs, writing regexes that can validate URL
+parameters is a path that leads to frustration and insanity. A much simpler
+approach consists of using the <cite>url_param</cite> ACL provided by HAProxy.</p>
+<p>For example, take the NodeJS endpoint below:</p>
+<pre class="code javascript literal-block">
+<span class="punctuation">{</span>
+  <span class="name other">method</span><span class="operator">:</span> <span class="literal string single">'GET'</span><span class="punctuation">,</span>
+  <span class="name other">path</span><span class="operator">:</span> <span class="literal string single">'/verify_email'</span><span class="punctuation">,</span>
+  <span class="name other">config</span><span class="operator">:</span> <span class="punctuation">{</span>
+    <span class="name other">validate</span><span class="operator">:</span> <span class="punctuation">{</span>
+      <span class="name other">query</span><span class="operator">:</span> <span class="punctuation">{</span>
+        <span class="name other">code</span><span class="operator">:</span> <span class="name other">isA</span><span class="punctuation">.</span><span class="name other">string</span><span class="punctuation">(</span><span class="punctuation">).</span><span class="name other">max</span><span class="punctuation">(</span><span class="literal number integer">32</span><span class="punctuation">).</span><span class="name other">regex</span><span class="punctuation">(</span><span class="name other">HEX_STRING</span><span class="punctuation">).</span><span class="name other">required</span><span class="punctuation">(</span><span class="punctuation">),</span>
+        <span class="name other">uid</span><span class="operator">:</span> <span class="name other">isA</span><span class="punctuation">.</span><span class="name other">string</span><span class="punctuation">(</span><span class="punctuation">).</span><span class="name other">max</span><span class="punctuation">(</span><span class="literal number integer">32</span><span class="punctuation">).</span><span class="name other">regex</span><span class="punctuation">(</span><span class="name other">HEX_STRING</span><span class="punctuation">).</span><span class="name other">required</span><span class="punctuation">(</span><span class="punctuation">),</span>
+        <span class="name other">service</span><span class="operator">:</span> <span class="name other">isA</span><span class="punctuation">.</span><span class="name other">string</span><span class="punctuation">(</span><span class="punctuation">).</span><span class="name other">max</span><span class="punctuation">(</span><span class="literal number integer">16</span><span class="punctuation">).</span><span class="name other">alphanum</span><span class="punctuation">(</span><span class="punctuation">).</span><span class="name other">optional</span><span class="punctuation">(</span><span class="punctuation">),</span>
+        <span class="name other">redirectTo</span><span class="operator">:</span> <span class="name other">isA</span><span class="punctuation">.</span><span class="name other">string</span><span class="punctuation">(</span><span class="punctuation">)</span>
+          <span class="punctuation">.</span><span class="name other">max</span><span class="punctuation">(</span><span class="literal number integer">512</span><span class="punctuation">)</span>
+          <span class="punctuation">.</span><span class="name other">regex</span><span class="punctuation">(</span><span class="name other">validators</span><span class="punctuation">.</span><span class="name other">domainRegex</span><span class="punctuation">(</span><span class="name other">redirectDomain</span><span class="punctuation">))</span>
+          <span class="punctuation">.</span><span class="name other">optional</span><span class="punctuation">(</span><span class="punctuation">)</span>
+      <span class="punctuation">}</span>
+    <span class="punctuation">}</span>
+  <span class="punctuation">},</span>
+  <span class="name other">handler</span><span class="operator">:</span> <span class="keyword declaration">function</span> <span class="punctuation">(</span><span class="name other">request</span><span class="punctuation">,</span> <span class="name other">reply</span><span class="punctuation">)</span> <span class="punctuation">{</span>
+    <span class="keyword">return</span> <span class="name other">reply</span><span class="punctuation">(</span><span class="punctuation">).</span><span class="name other">redirect</span><span class="punctuation">(</span><span class="name other">config</span><span class="punctuation">.</span><span class="name other">contentServer</span><span class="punctuation">.</span><span class="name other">url</span> <span class="operator">+</span> <span class="name other">request</span><span class="punctuation">.</span><span class="name other">raw</span><span class="punctuation">.</span><span class="name other">req</span><span class="punctuation">.</span><span class="name other">url</span><span class="punctuation">)</span>
+  <span class="punctuation">}</span>
+<span class="punctuation">},</span>
+</pre>
+<p>This endpoints receives requests on <cite>/verify_email</cite> with the parameters <cite>code</cite>,
+a 32 character hexadecimal, <cite>uid</cite>, a 32 character hexadecimal, <cite>service</cite>, a 16
+character string, and <cite>redirectTo</cite>, a FQDN. However, only <cite>code</cite> and <cite>uid</cite> are
+required.</p>
+<p>In the previous section, we validated that requests on <cite>/verify_email</cite> must use
+the method GET. Now we are taking the validation one step further, and blocking
+requests on this endpoint that do not match our prerequisite.</p>
+<pre class="code literal-block">
+acl endpoint-verify_email path /verify_email
+acl param-code urlp_reg(code) [0-9a-fA-F]{1,32}
+acl param-uid urlp_reg(uid) [0-9a-fA-F]{1,32}
+block if endpoint-verify_email !param-code or endpoint-verify_email !param-uid
+</pre>
+<p>The follow request will be accepted, everything else will be rejected with a
+HTTP error 403.</p>
+<pre class="code literal-block">
+https://haproxy_server/verify_email?code=d64f53326cec3a1af60166a929ca52bd&amp;uid=d64f53326cec3a1af60166a929c3d7b2131561792b4837377ed2e0cde3295df2
+</pre>
+<p>Using regexes to validate URL parameters is a powerful feature. Below is another
+example that matches an email addresses using case-insensitive regex:</p>
+<pre class="code literal-block">
+acl endpoint-complete_reset_password path /complete_reset_password
+acl param-email urlp_reg(email) -i ^[A-Z0-9._%+-]+&#64;[A-Z0-9.-]+\.[A-Z]{2,4}$
+acl param-token urlp_reg(token) [0-9a-fA-F]{1,64}
+block if endpoint-complete_reset_password !param-email or endpoint-complete_reset_password !param-token or endpoint-complete_reset_password !param-code
+</pre>
+<p>Note that we didn't redefine <cite>param-code</cite> when we reused it in the <cite>block</cite>
+command. This is because ACL are defined globally for a frontend, and can
+be reused multiple times.</p>
+</div>
+<div class="section" id="filtering-payloads-on-post-requests">
+<h2><a class="toc-backref" href="#id20">7.2&nbsp;&nbsp;&nbsp;Filtering payloads on POST requests</a></h2>
+<p>POST requests are harder to validate, because they do not follow a predefined
+format, but also because the client could be sending the body over a long period
+of time, split over dozens of packets.</p>
+<p>However, in the case of an API that only handles small POST payloads, we can at
+least verify the size of the payload sent by the client, and make sure that
+clients do not overload the backend with random data. This can be done using an
+ACL on the content-length header of the request. The ACL below discard requests
+that have a content-length larger than 5 kilo-bytes (which is already a lot of
+text).</p>
+<pre class="code literal-block">
+# match content-length larger than 5kB
+acl request-too-big hdr_val(content-length) gt 5000
+block if METH_POST request-too-big
+</pre>
+</div>
+<div class="section" id="marking-instead-of-blocking">
+<h2><a class="toc-backref" href="#id21">7.3&nbsp;&nbsp;&nbsp;Marking instead of blocking</a></h2>
+<p>Blocking requests may be the preferred behavior in production, but only after a
+grace period that allows you to build a traffic profile, and fine tune your
+configuration. Instead of using <cite>block</cite> statements in the ACLs, we can insert a
+header with a description of the blocking decision. This header will be logged,
+and can be analyzed to verify that no legitimate traffic would be blocked.</p>
+<p>As discussed in <cite>Logging in a separate frontend</cite>, HAProxy is unable to log
+request header that it has set itself. So make sure to log in a separate
+frontend if you use this technique.</p>
+<p>The configuration below uses a custom header <cite>X-Haproxy-ACL</cite>. If an ACL matches,
+the header is set to the name of the ACL that matched. If several ACLs match,
+each ACL name is appended to the header, and separated by a comma.</p>
+<p>At the end of the ACL evaluation, if this header is present in the request, we
+know that the request should be blocked.</p>
+<p>In the <cite>fxa-https</cite> frontend, we replace the <cite>block</cite> paramameters with the
+following logic:</p>
+<pre class="code literal-block">
+# ~~~ Requests validation using ACLs ~~~
+# block requests that don't match the predefined endpoints
+acl valid-get path -f /etc/haproxy/get_endpoints.lst
+acl valid-post path -f /etc/haproxy/post_endpoints.lst
+http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]invalid-endpoint, unless METH_GET valid-get or METH_POST valid-post
+
+# block requests on verify_email that do not have the correct params
+acl endpoint-verify_email path /v1/verify_email
+acl param-code urlp_reg(code) [0-9a-fA-F]{1,32}
+acl param-uid urlp_reg(uid) [0-9a-fA-F]{1,32}
+http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]invalid-parameters, if endpoint-verify_email !param-code or endpoint-verify_email !param-uid
+
+# block requests on complete_reset_password that do not have the correct params
+acl endpoint-complete_reset_password path /v1/complete_reset_password
+acl param-email urlp_reg(email) -i ^[A-Z0-9._%+-]+&#64;[A-Z0-9.-]+\.[A-Z]{2,4}$
+acl param-token urlp_reg(token) [0-9a-fA-F]{1,64}
+http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]invalid-parameters, if endpoint-complete_reset_password !param-email or endpoint-complete_reset_password !param-token or endpoint-complete_reset_password !param-code
+
+# block content-length larger than 500kB
+acl request-too-big hdr_val(content-length) gt 5000
+http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]request-too-big, if METH_POST request-too-big
+</pre>
+<p>Note the <cite>%[req.fhdr(X-Haproxy-ACL,-1)]</cite> parameter, that retrieves the value of
+the latest occurence of the <cite>X-Haproxy-ACL</cite> header, so we can append to it and
+store it again. However, this will create multiple headers if more than one ACL
+is matched, but that's OK because:
+- we can delete them before sending the request to the backend, using <cite>reqdel</cite>
+- the logging directive <cite>capture request header</cite> will only log the last occurence</p>
+<pre class="code literal-block">
+X-Haproxy-ACL: over-100-active-connections,
+X-Haproxy-ACL: over-100-active-connections,over-100-connections-in-10-seconds,
+X-Haproxy-ACL: over-100-active-connections,over-100-connections-in-10-seconds,high-error-rate,
+X-Haproxy-ACL: over-100-active-connections,over-100-connections-in-10-seconds,high-error-rate,high-request-rate,
+</pre>
+<p>Then, in the logger frontend, we check the value of the header, and block if
+needed.</p>
+<pre class="code literal-block">
+# frontend use to log acl activity
+frontend logger
+        ...
+        # if previous ACL didn't pass, and IP isn't whitelisted, block the request
+        acl whitelisted req.fhdr(X-Haproxy-ACL) -m beg whitelisted,
+        acl fail-validation req.fhdr(X-Haproxy-ACL) -m found
+        block if !whitelisted fail-validation
+</pre>
+</div>
+</div>
+<div class="section" id="haproxy-management">
+<h1><a class="toc-backref" href="#id22">8&nbsp;&nbsp;&nbsp;HAProxy management</a></h1>
+<div class="section" id="enabling-the-stat-socket">
+<h2><a class="toc-backref" href="#id23">8.1&nbsp;&nbsp;&nbsp;Enabling the stat socket</a></h2>
+</div>
+<div class="section" id="collecting-statistics">
+<h2><a class="toc-backref" href="#id24">8.2&nbsp;&nbsp;&nbsp;Collecting statistics</a></h2>
+</div>
+<div class="section" id="analyzing-errors">
+<h2><a class="toc-backref" href="#id25">8.3&nbsp;&nbsp;&nbsp;Analyzing errors</a></h2>
+</div>
+<div class="section" id="parsing-performance-metrics-from-the-logs">
+<h2><a class="toc-backref" href="#id26">8.4&nbsp;&nbsp;&nbsp;Parsing performance metrics from the logs</a></h2>
+</div>
+<div class="section" id="soft-reload">
+<h2><a class="toc-backref" href="#id27">8.5&nbsp;&nbsp;&nbsp;Soft reload</a></h2>
+<p>HAProxy supports soft configuration reload, that doesn't drop connections. To
+perform a soft reload, call haproxy with the following command:</p>
+<pre class="code bash literal-block">
+<span class="name variable">$ </span>sudo /opt/haproxy -f /etc/haproxy/haproxy.cfg -sf <span class="keyword">$(</span>pidof haproxy<span class="keyword">)</span>
+</pre>
+<p>The old process will be replaced with a new one, that uses a fresh
+configuration. The logs will show the reload:</p>
+<blockquote>
+<pre class="literal-block">
+Mar  6 12:59:41 localhost haproxy[7603]: Proxy https started.
+Mar  6 12:59:41 localhost haproxy[7603]: Proxy app started.
+Mar  6 12:59:41 localhost haproxy[5763]: Stopping frontend https in 0 ms.
+Mar  6 12:59:41 localhost haproxy[5763]: Stopping backend app in 0 ms.
+Mar  6 12:59:41 localhost haproxy[5763]: Proxy https stopped (FE: 29476 conns, BE: 0 conns).
+Mar  6 12:59:41 localhost haproxy[5763]: Proxy app stopped (FE: 0 conns, BE: 1746 conns).
+</pre>
+</blockquote>
+</div>
+</div>
+<div class="section" id="full-haproxy-configuration">
+<h1><a class="toc-backref" href="#id28">9&nbsp;&nbsp;&nbsp;Full HAProxy configuration</a></h1>
+<pre class="code bash literal-block">
+global
+        <span class="comment"># to have these messages end up in /var/log/haproxy.log you will
+</span>        <span class="comment"># need to:
+</span>        <span class="comment">#
+</span>        <span class="comment"># 1) configure syslog to accept network log events.  This is done
+</span>        <span class="comment">#    by adding the '-r' option to the SYSLOGD_OPTIONS in
+</span>        <span class="comment">#    /etc/sysconfig/syslog
+</span>        <span class="comment">#
+</span>        <span class="comment"># 2) configure local2 events to go to the /var/log/haproxy.log
+</span>        <span class="comment">#   file. A line like the following can be added to
+</span>        <span class="comment">#   /etc/sysconfig/syslog
+</span>        <span class="comment">#
+</span>        <span class="comment">#    local2.*                       /var/log/haproxy.log
+</span>        <span class="comment">#
+</span>        log         127.0.0.1 local2
+        chroot      /var/lib/haproxy
+        pidfile     /var/run/haproxy.pid
+        user        haproxy
+        group       haproxy
+        daemon
+
+        <span class="comment"># turn on stats unix socket
+</span>        stats socket ipv4&#64;127.0.0.1:51415 level admin
+        stats timeout 2m
+
+<span class="comment">#---------------------------------------------------------------------
+# common defaults that all the 'listen' and 'backend' sections will
+# use if not designated in their block
+#---------------------------------------------------------------------
+</span>defaults
+        mode http
+        log global
+        no option dontlognull
+        option splice-auto
+        option http-keep-alive
+        option redispatch
+        retries 3
+        <span class="comment"># disconnect slow handshake clients early, protect from
+</span>        <span class="comment"># resources exhaustion attacks
+</span>        timeout http-request    5s
+        timeout queue           1m
+        timeout connect         5s
+        timeout client          1m
+        timeout server          1m
+        timeout http-keep-alive 10s
+        timeout check           10s
+        maxconn                 100000
+
+<span class="comment"># frontend used to return health status without requiring SSL
+</span>frontend haproxy_status
+        <span class="name builtin">bind </span>0.0.0.0:34180      <span class="comment"># 34180 means EALTH ;)
+</span>        log-format <span class="operator">[</span>%pid<span class="operator">]</span><span class="literal string escape">\ </span><span class="operator">[</span>%Ts.%ms<span class="operator">]</span><span class="literal string escape">\ </span>%ac/%fc/%bc/%bq/%sc/%sq/%rc<span class="literal string escape">\ </span>%Tq/%Tw/%Tc/%Tr/%Tt<span class="literal string escape">\ </span>%tsc<span class="literal string escape">\ </span>%ci:%cp<span class="literal string escape">\ </span>%fi:%fp<span class="literal string escape">\ </span>%si:%sp<span class="literal string escape">\ </span>%ft<span class="literal string escape">\ </span>%sslc<span class="literal string escape">\ </span>%sslv<span class="literal string escape">\ </span>%<span class="operator">{</span>+Q<span class="operator">}</span>r<span class="literal string escape">\ </span>%ST<span class="literal string escape">\ </span>%b:%s<span class="literal string escape">\ </span><span class="literal string double">&quot;%CC&quot;</span><span class="literal string escape">\ </span><span class="literal string double">&quot;%hr&quot;</span><span class="literal string escape">\ </span><span class="literal string double">&quot;%CS&quot;</span><span class="literal string escape">\ </span><span class="literal string double">&quot;%hs&quot;</span><span class="literal string escape">\ </span><span class="name variable">req_size</span><span class="operator">=</span>%U<span class="literal string escape">\ </span><span class="name variable">resp_size</span><span class="operator">=</span>%B
+        <span class="comment"># create a status URI in /haproxy_status that will return
+</span>        <span class="comment"># a 200 is backend is healthy, and 503 if it isn't. This
+</span>        <span class="comment"># URI is queried by the ELB.
+</span>        acl backend_dead nbsrv<span class="operator">(</span>fxa-nodejs<span class="operator">)</span> lt 1
+        monitor-uri /haproxy_status
+        monitor fail <span class="keyword">if </span>backend_dead
+
+        <span class="comment"># reject non status requests
+</span>        <span class="comment">#acl status_req path /haproxy_status
+</span>        <span class="comment">#tcp-request content reject if ! status_req
+</span>        default_backend fxa-nodejs
+
+<span class="comment"># main frontend with SSL and PROXY protocol
+</span>frontend fxa-https
+        <span class="name builtin">bind </span>0.0.0.0:443 accept-proxy ssl crt /etc/haproxy/bundle.pem ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-DSS-AES128-GCM-SHA256:kEDH+AESGCM:ECDHE-RSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES256-SHA384:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA:ECDHE-ECDSA-AES256-SHA:DHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA:DHE-DSS-AES128-SHA256:DHE-RSA-AES256-SHA256:DHE-DSS-AES256-SHA:DHE-RSA-AES256-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:ECDHE-RSA-RC4-SHA:ECDHE-ECDSA-RC4-SHA:AES128:AES256:RC4-SHA:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!3DES:!MD5:!PSK
+
+        <span class="comment"># Blacklist: Deny access to some IPs before anything else is checked
+</span>        tcp-request content reject <span class="keyword">if</span> <span class="operator">{</span> src -f /etc/haproxy/blacklist.lst <span class="operator">}</span>
+
+        <span class="comment"># Whitelist: Allow IPs to bypass the filters
+</span>        http-request add-header X-Haproxy-ACL %<span class="operator">[</span>req.fhdr<span class="operator">(</span>X-Haproxy-ACL,-1<span class="operator">)]</span>whitelisted, <span class="keyword">if</span> <span class="operator">{</span> src -f /etc/haproxy/whitelist.lst <span class="operator">}</span>
+        http-request allow <span class="keyword">if</span> <span class="operator">{</span> src -f /etc/haproxy/whitelist.lst <span class="operator">}</span>
+
+        <span class="comment"># ~~~ Requests validation using ACLs ~~~
+</span>        <span class="comment"># block requests that don't match the predefined endpoints
+</span>        acl valid-get path -f /etc/haproxy/get_endpoints.lst
+        acl valid-post path -f /etc/haproxy/post_endpoints.lst
+        http-request add-header X-Haproxy-ACL %<span class="operator">[</span>req.fhdr<span class="operator">(</span>X-Haproxy-ACL,-1<span class="operator">)]</span>invalid-endpoint, unless METH_GET valid-get or METH_POST valid-post
+
+        <span class="comment"># block requests on verify_email that do not have the correct params
+</span>        acl endpoint-verify_email path /v1/verify_email
+        acl param-code urlp_reg<span class="operator">(</span>code<span class="operator">)</span> <span class="operator">[</span>0-9a-fA-F<span class="operator">]{</span>1,32<span class="operator">}</span>
+        acl param-uid urlp_reg<span class="operator">(</span>uid<span class="operator">)</span> <span class="operator">[</span>0-9a-fA-F<span class="operator">]{</span>1,32<span class="operator">}</span>
+        http-request add-header X-Haproxy-ACL %<span class="operator">[</span>req.fhdr<span class="operator">(</span>X-Haproxy-ACL,-1<span class="operator">)]</span>invalid-parameters, <span class="keyword">if </span>endpoint-verify_email !param-code or endpoint-verify_email !param-uid
+
+        <span class="comment"># block requests on complete_reset_password that do not have the correct params
+</span>        acl endpoint-complete_reset_password path /v1/complete_reset_password
+        acl param-email urlp_reg<span class="operator">(</span>email<span class="operator">)</span> -i ^<span class="operator">[</span>A-Z0-9._%+-<span class="operator">]</span>+&#64;<span class="operator">[</span>A-Z0-9.-<span class="operator">]</span>+<span class="literal string escape">\.</span><span class="operator">[</span>A-Z<span class="operator">]{</span>2,4<span class="operator">}</span><span class="error">$</span>
+        acl param-token urlp_reg<span class="operator">(</span>token<span class="operator">)</span> <span class="operator">[</span>0-9a-fA-F<span class="operator">]{</span>1,64<span class="operator">}</span>
+        http-request add-header X-Haproxy-ACL %<span class="operator">[</span>req.fhdr<span class="operator">(</span>X-Haproxy-ACL,-1<span class="operator">)]</span>invalid-parameters, <span class="keyword">if </span>endpoint-complete_reset_password !param-email or endpoint-complete_reset_password !param-token or endpoint-complete_reset_password !param-code
+
+        <span class="comment"># block content-length larger than 500kB
+</span>        acl request-too-big hdr_val<span class="operator">(</span>content-length<span class="operator">)</span> gt 5000
+        http-request add-header X-Haproxy-ACL %<span class="operator">[</span>req.fhdr<span class="operator">(</span>X-Haproxy-ACL,-1<span class="operator">)]</span>request-too-big, <span class="keyword">if </span>METH_POST request-too-big
+
+        <span class="comment"># ~~~ DDoS protection ~~~
+</span>        <span class="comment"># HAproxy tracks client IPs into a global stick table. Each IP is
+</span>        <span class="comment"># stored for a limited amount of time, with several counters attached
+</span>        <span class="comment"># to it. When a new connection comes in, the stick table is evaluated
+</span>        <span class="comment"># to verify that the new connection from this client is allowed to
+</span>        <span class="comment"># continue.
+</span>
+        <span class="comment"># enable tracking of counters for src ip in the default stick-table
+</span>        tcp-request content track-sc0 src
+
+        <span class="comment"># Stick Table Definitions
+</span>        <span class="comment">#  - conn_cur: count active connections
+</span>        <span class="comment">#  - conn_rate(10s): average incoming connection rate over 10 seconds
+</span>        <span class="comment">#  - http_req_rate(10s): Monitors the number of request sent by an IP over a period of 10 seconds
+</span>        <span class="comment">#  - http_err_rate(10s): Monitors the number of errors generated by an IP over a period of 10 seconds
+</span>        stick-table <span class="name builtin">type </span>ip size 500k expire 30s store conn_cur,conn_rate<span class="operator">(</span>10s<span class="operator">)</span>,http_req_rate<span class="operator">(</span>10s<span class="operator">)</span>,http_err_rate<span class="operator">(</span>10s<span class="operator">)</span>
+
+        <span class="comment"># Reject the new connection if the client already has 100 opened
+</span>        http-request add-header X-Haproxy-ACL %<span class="operator">[</span>req.fhdr<span class="operator">(</span>X-Haproxy-ACL,-1<span class="operator">)]</span>over-100-active-connections, <span class="keyword">if</span> <span class="operator">{</span> src_conn_cur ge 100 <span class="operator">}</span>
+
+        <span class="comment"># Reject the new connection if the client has opened more than 100 connections in 10 seconds
+</span>        http-request add-header X-Haproxy-ACL %<span class="operator">[</span>req.fhdr<span class="operator">(</span>X-Haproxy-ACL,-1<span class="operator">)]</span>over-100-connections-in-10-seconds, <span class="keyword">if</span> <span class="operator">{</span> src_conn_rate ge 100 <span class="operator">}</span>
+
+        <span class="comment"># Reject the connection if the client has passed the HTTP error rate
+</span>        http-request add-header X-Haproxy-ACL %<span class="operator">[</span>req.fhdr<span class="operator">(</span>X-Haproxy-ACL,-1<span class="operator">)]</span>high-error-rate, <span class="keyword">if</span> <span class="operator">{</span> sc0_http_err_rate<span class="operator">()</span> gt 100 <span class="operator">}</span>
+
+        <span class="comment"># Reject the connection if the client has passed the HTTP request rate
+</span>        http-request add-header X-Haproxy-ACL %<span class="operator">[</span>req.fhdr<span class="operator">(</span>X-Haproxy-ACL,-1<span class="operator">)]</span>high-request-rate, <span class="keyword">if</span> <span class="operator">{</span> sc0_http_req_rate<span class="operator">()</span> gt 500 <span class="operator">}</span>
+
+        <span class="comment"># ~~~ Logging ~~~
+</span>        <span class="comment"># Insert a unique request identifier is the headers of the request
+</span>        <span class="comment"># passed to the backend
+</span>        unique-id-format %<span class="operator">{</span>+X<span class="operator">}</span>o<span class="literal string escape">\ </span>%ci:%cp_%fi:%fp_%Ts_%rt:%pid
+        unique-id-header X-Unique-ID
+
+        <span class="comment"># Add the X-Forwarded-For header
+</span>        option forwardfor except 127.0.0.0/8
+
+        <span class="comment"># Don't log here, log into logger frontend
+</span>        no log
+        default_backend logger
+
+backend logger
+        server localhost localhost:55555 send-proxy
+
+<span class="comment"># frontend use to log acl activity
+</span>frontend logger
+        <span class="name builtin">bind </span>localhost:55555 accept-proxy
+        log-format <span class="operator">[</span>%pid<span class="operator">]</span><span class="literal string escape">\ </span><span class="operator">[</span>%Ts.%ms<span class="operator">]</span><span class="literal string escape">\ </span>%ac/%fc/%bc/%bq/%sc/%sq/%rc<span class="literal string escape">\ </span>%Tq/%Tw/%Tc/%Tr/%Tt<span class="literal string escape">\ </span>%tsc<span class="literal string escape">\ </span>%ci:%cp<span class="literal string escape">\ </span>%fi:%fp<span class="literal string escape">\ </span>%si:%sp<span class="literal string escape">\ </span>%ft<span class="literal string escape">\ </span>%sslc<span class="literal string escape">\ </span>%sslv<span class="literal string escape">\ </span>%<span class="operator">{</span>+Q<span class="operator">}</span>r<span class="literal string escape">\ </span>%ST<span class="literal string escape">\ </span>%b:%s<span class="literal string escape">\ </span><span class="literal string double">&quot;%CC&quot;</span><span class="literal string escape">\ </span><span class="literal string double">&quot;%hr&quot;</span><span class="literal string escape">\ </span><span class="literal string double">&quot;%CS&quot;</span><span class="literal string escape">\ </span><span class="literal string double">&quot;%hs&quot;</span><span class="literal string escape">\ </span><span class="name variable">ireq_size</span><span class="operator">=</span>%U<span class="literal string escape">\ </span><span class="name variable">resp_size</span><span class="operator">=</span>%B
+        capture request header Referrer len 64
+        capture request header Content-Length len 10
+        capture request header User-Agent len 64
+        capture request header X-Haproxy-ACL len 256
+        capture request header X-Unique-ID len 64
+
+        <span class="comment"># if previous ACL didn't pass, and IP isn't whitelisted, block the request
+</span>        acl whitelisted req.fhdr<span class="operator">(</span>X-Haproxy-ACL<span class="operator">)</span> -m beg whitelisted,
+        acl fail-validation req.fhdr<span class="operator">(</span>X-Haproxy-ACL<span class="operator">)</span> -m found
+        block <span class="keyword">if</span> !whitelisted fail-validation
+
+        default_backend fxa-nodejs
+
+backend fxa-nodejs
+        <span class="comment"># Remove the ACL header, it's not useful to NodeJS
+</span>        reqdel ^X-Haproxy-ACL
+        option httpchk GET /__heartbeat__ HTTP/1.0
+        http-check expect status 200
+        server nodejs1 localhost:8000 check inter 1000
+</pre>
+</div>
+<div class="section" id="building-process">
+<h1><a class="toc-backref" href="#id29">10&nbsp;&nbsp;&nbsp;Building process</a></h1>
+<div class="section" id="static-build">
+<h2><a class="toc-backref" href="#id30">10.1&nbsp;&nbsp;&nbsp;Static build</a></h2>
+<p>The script <a class="reference external" href="build_static_haproxy.sh">build_static_haproxy.sh</a> builds haproxy with statically linked
+OpenSSL and PCRE support.</p>
+<pre class="code bash literal-block">
+<span class="comment">#!/usr/bin/env bash
+</span>
+<span class="comment"># some dependencies for rhel/fedora/centos/sl
+</span><span class="operator">[</span> -e /etc/redhat-release <span class="operator">]</span> <span class="operator">&amp;&amp;</span> sudo yum install pcre-devel pcre-static gcc make
+
+<span class="comment"># create a new dir for the build
+</span><span class="name variable">BD</span><span class="operator">=</span><span class="literal string double">&quot;build$(date +%s)&quot;</span>
+<span class="name builtin">echo </span>working in <span class="name variable">$BD</span>
+mkdir <span class="name variable">$BD</span>
+<span class="name builtin">cd</span> <span class="name variable">$BD</span>
+
+<span class="comment">#-- Build static openssl
+</span>wget http://www.openssl.org/source/openssl-1.0.1f.tar.gz
+tar -xzvf openssl-1.0.1f.tar.gz
+<span class="name builtin">cd </span>openssl-1.0.1f
+<span class="name builtin">export </span><span class="name variable">STATICLIBSSL</span><span class="operator">=</span><span class="literal string double">&quot;../staticlibssl&quot;</span>
+rm -rf <span class="literal string double">&quot;$STATICLIBSSL&quot;</span>
+mkdir <span class="literal string double">&quot;$STATICLIBSSL&quot;</span>
+make clean
+./config --prefix<span class="operator">=</span><span class="name variable">$STATICLIBSSL</span> no-shared <span class="name builtin">enable</span>-ec_nistp_64_gcc_128
+make depend
+make
+make install_sw
+
+<span class="comment">#-- Build static haproxy
+</span><span class="name builtin">cd</span> ..
+wget http://haproxy.1wt.eu/download/1.5/src/devel/haproxy-1.5-dev22.tar.gz
+tar -xzvf haproxy-1.5-dev22.tar.gz
+<span class="name builtin">cd </span>haproxy-1.5-dev22
+make clean
+make <span class="name variable">TARGET</span><span class="operator">=</span>linux2628 <span class="name variable">USE_STATIC_PCRE</span><span class="operator">=</span>1 <span class="name variable">USE_OPENSSL</span><span class="operator">=</span>1 <span class="name variable">SSL_INC</span><span class="operator">=</span><span class="name variable">$STATICLIBSSL</span>/include <span class="name variable">SSL_LIB</span><span class="operator">=</span><span class="literal string double">&quot;$STATICLIBSSL/lib -ldl&quot;</span>
+./haproxy -vv
+
+<span class="operator">[</span> <span class="name variable">$?</span> -lt 1 <span class="operator">]</span> <span class="operator">&amp;&amp;</span> <span class="name builtin">echo </span>haproxy successfully built at <span class="name variable">$BD</span>/haproxy-1.5-dev22/haproxy
+</pre>
+</div>
+<div class="section" id="dynamic-build">
+<h2><a class="toc-backref" href="#id31">10.2&nbsp;&nbsp;&nbsp;Dynamic build</a></h2>
+<p>The script <a class="reference external" href="build_dynamic_haproxy.sh">build_dynamic_haproxy.sh</a> does the same as above, but links to
+PCRE and OpenSSL dynamically.</p>
+<pre class="code bash literal-block">
+<span class="comment">#!/usr/bin/env bash
+</span>
+<span class="comment"># some dependencies for rhel/fedora/centos/sl
+</span><span class="operator">[</span> -e /etc/redhat-release <span class="operator">]</span> <span class="operator">&amp;&amp;</span> sudo yum install pcre-devel pcre-static gcc make openssl-devel
+
+<span class="comment"># create a new dir for the build
+</span><span class="name variable">BD</span><span class="operator">=</span><span class="literal string double">&quot;build$(date +%s)&quot;</span>
+<span class="name builtin">echo </span>working in <span class="name variable">$BD</span>
+mkdir <span class="name variable">$BD</span>
+<span class="name builtin">cd</span> <span class="name variable">$BD</span>
+
+<span class="comment">#-- Build static haproxy
+</span>wget http://haproxy.1wt.eu/download/1.5/src/devel/haproxy-1.5-dev22.tar.gz
+tar -xzvf haproxy-1.5-dev22.tar.gz
+<span class="name builtin">cd </span>haproxy-1.5-dev22
+make clean
+make <span class="name variable">TARGET</span><span class="operator">=</span>linux2628 <span class="name variable">USE_OPENSSL</span><span class="operator">=</span>1
+./haproxy -vv
+
+<span class="operator">[</span> <span class="name variable">$?</span> -lt 1 <span class="operator">]</span> <span class="operator">&amp;&amp;</span> <span class="name builtin">echo </span>haproxy successfully built at <span class="name variable">$BD</span>/haproxy-1.5-dev22/haproxy
+</pre>
+</div>
+<div class="section" id="rpm-build">
+<h2><a class="toc-backref" href="#id32">10.3&nbsp;&nbsp;&nbsp;RPM build</a></h2>
+<p>Using the spec file in <a class="reference external" href="haproxy.spec">haproxy.spec</a> and bash scripts in <a class="reference external" href="build_rpm.sh">build_rpm.sh</a>,
+we can build a RPM package using for the latest development version of HAProxy.</p>
+<p><cite>haproxy.spec</cite></p>
+<pre class="code bash literal-block">
+<span class="comment"># To Build:
+#
+# sudo yum -y install rpmdevtools &amp;&amp; rpmdev-setuptree
+# sudo yum -y install pcre-devel openssl-devel
+# wget https://raw.github.com/nmilford/rpm-haproxy/master/haproxy.spec -O ./rpmbuild/SPECS/haproxy.spec
+# wget http://haproxy.1wt.eu/download/1.5/src/devel/haproxy-1.5-dev22.tar.gz -O ./rpmbuild/SOURCES/haproxy-1.5-dev22.tar.gz
+# rpmbuild -bb  ./rpmbuild/SPECS/haproxy.spec
+</span>
+%define version 1.5
+%define dev_rel dev25
+%define release 1
+
+Summary: HA-Proxy is a TCP/HTTP reverse proxy <span class="keyword">for </span>high availability environments
+Name: haproxy
+Version: %<span class="operator">{</span>version<span class="operator">}</span>
+Release: %<span class="operator">{</span>dev_rel<span class="operator">}</span>.%<span class="operator">{</span>release<span class="operator">}</span>
+License: GPL
+Group: System Environment/Daemons
+URL: http://haproxy.1wt.eu
+Source0: http://haproxy.1wt.eu/download/1.5/src/devel/%<span class="operator">{</span>name<span class="operator">}</span>-%<span class="operator">{</span>version<span class="operator">}</span>-%<span class="operator">{</span>dev_rel<span class="operator">}</span>.tar.gz
+BuildRoot: %<span class="operator">{</span>_tmppath<span class="operator">}</span>/%<span class="operator">{</span>name<span class="operator">}</span>-%<span class="operator">{</span>version<span class="operator">}</span>-root
+BuildRequires: pcre-devel openssl-devel
+Requires: /sbin/chkconfig, /sbin/service
+
+%description
+HAProxy is a TCP/HTTP reverse proxy which is particularly suited <span class="keyword">for </span>high
+availability environments. Indeed, it can:
+- route HTTP requests depending on statically assigned cookies
+- spread the load among several servers <span class="keyword">while </span>assuring server persistence
+  through the use of HTTP cookies
+- switch to backup servers in the event a main one fails
+- accept connections to special ports dedicated to service monitoring
+- stop accepting connections without breaking existing ones
+- add/modify/delete HTTP headers both ways
+- block requests matching a particular pattern
+
+It needs very little resource. Its event-driven architecture allows it to easily
+handle thousands of simultaneous connections on hundreds of instances without
+risking the system<span class="literal string single">'s stability.
+
+%prep
+%setup -n %{name}-%{version}-%{dev_rel}
+
+# We don'</span>t want any perl dependecies in this RPM:
+%define __perl_requires /bin/true
+
+%build
+%<span class="operator">{</span>__make<span class="operator">}</span> <span class="name variable">USE_PCRE</span><span class="operator">=</span>1 <span class="name variable">TARGET</span><span class="operator">=</span>linux2628 <span class="name variable">USE_OPENSSL</span><span class="operator">=</span>1
+
+%install
+<span class="operator">[</span> <span class="literal string double">&quot;%{buildroot}&quot;</span> !<span class="operator">=</span> <span class="literal string double">&quot;/&quot;</span> <span class="operator">]</span> <span class="operator">&amp;&amp;</span> %<span class="operator">{</span>__rm<span class="operator">}</span> -rf %<span class="operator">{</span>buildroot<span class="operator">}</span>
+
+%<span class="operator">{</span>__install<span class="operator">}</span> -d %<span class="operator">{</span>buildroot<span class="operator">}</span>%<span class="operator">{</span>_sbindir<span class="operator">}</span>
+%<span class="operator">{</span>__install<span class="operator">}</span> -d %<span class="operator">{</span>buildroot<span class="operator">}</span>%<span class="operator">{</span>_sysconfdir<span class="operator">}</span>/rc.d/init.d
+%<span class="operator">{</span>__install<span class="operator">}</span> -d %<span class="operator">{</span>buildroot<span class="operator">}</span>%<span class="operator">{</span>_sysconfdir<span class="operator">}</span>/%<span class="operator">{</span>name<span class="operator">}</span>
+%<span class="operator">{</span>__install<span class="operator">}</span> -d %<span class="operator">{</span>buildroot<span class="operator">}</span>%<span class="operator">{</span>_mandir<span class="operator">}</span>/man1/
+
+%<span class="operator">{</span>__install<span class="operator">}</span> -s %<span class="operator">{</span>name<span class="operator">}</span> %<span class="operator">{</span>buildroot<span class="operator">}</span>%<span class="operator">{</span>_sbindir<span class="operator">}</span>/
+%<span class="operator">{</span>__install<span class="operator">}</span> -c -m 644 examples/%<span class="operator">{</span>name<span class="operator">}</span>.cfg %<span class="operator">{</span>buildroot<span class="operator">}</span>%<span class="operator">{</span>_sysconfdir<span class="operator">}</span>/%<span class="operator">{</span>name<span class="operator">}</span>/
+%<span class="operator">{</span>__install<span class="operator">}</span> -c -m 755 examples/%<span class="operator">{</span>name<span class="operator">}</span>.init %<span class="operator">{</span>buildroot<span class="operator">}</span>%<span class="operator">{</span>_sysconfdir<span class="operator">}</span>/rc.d/init.d/%<span class="operator">{</span>name<span class="operator">}</span>
+%<span class="operator">{</span>__install<span class="operator">}</span> -c -m 755 doc/%<span class="operator">{</span>name<span class="operator">}</span>.1 %<span class="operator">{</span>buildroot<span class="operator">}</span>%<span class="operator">{</span>_mandir<span class="operator">}</span>/man1/
+
+%clean
+<span class="operator">[</span> <span class="literal string double">&quot;%{buildroot}&quot;</span> !<span class="operator">=</span> <span class="literal string double">&quot;/&quot;</span> <span class="operator">]</span> <span class="operator">&amp;&amp;</span> %<span class="operator">{</span>__rm<span class="operator">}</span> -rf %<span class="operator">{</span>buildroot<span class="operator">}</span>
+
+%post
+/sbin/chkconfig --add %<span class="operator">{</span>name<span class="operator">}</span>
+
+%preun
+<span class="keyword">if</span> <span class="operator">[</span> <span class="name variable">$1</span> <span class="operator">=</span> 0 <span class="operator">]</span>; <span class="keyword">then</span>
+  /sbin/service %<span class="operator">{</span>name<span class="operator">}</span> stop &gt;/dev/null 2&gt;&amp;1 <span class="operator">||</span> :
+  /sbin/chkconfig --del %<span class="operator">{</span>name<span class="operator">}</span>
+<span class="keyword">fi</span>
+
+%postun
+<span class="keyword">if</span> <span class="operator">[</span> <span class="literal string double">&quot;$1&quot;</span> -ge <span class="literal string double">&quot;1&quot;</span> <span class="operator">]</span>; <span class="keyword">then</span>
+  /sbin/service %<span class="operator">{</span>name<span class="operator">}</span> condrestart &gt;/dev/null 2&gt;&amp;1 <span class="operator">||</span> :
+<span class="keyword">fi</span>
+
+%files
+%defattr<span class="operator">(</span>-,root,root<span class="operator">)</span>
+%doc CHANGELOG TODO examples/*.cfg doc/haproxy-en.txt doc/haproxy-fr.txt doc/architecture.txt doc/configuration.txt
+%doc %<span class="operator">{</span>_mandir<span class="operator">}</span>/man1/%<span class="operator">{</span>name<span class="operator">}</span>.1*
+
+%attr<span class="operator">(</span>0755,root,root<span class="operator">)</span> %<span class="operator">{</span>_sbindir<span class="operator">}</span>/%<span class="operator">{</span>name<span class="operator">}</span>
+%dir %<span class="operator">{</span>_sysconfdir<span class="operator">}</span>/%<span class="operator">{</span>name<span class="operator">}</span>
+%attr<span class="operator">(</span>0644,root,root<span class="operator">)</span> %config<span class="operator">(</span>noreplace<span class="operator">)</span> %<span class="operator">{</span>_sysconfdir<span class="operator">}</span>/%<span class="operator">{</span>name<span class="operator">}</span>/%<span class="operator">{</span>name<span class="operator">}</span>.cfg
+%attr<span class="operator">(</span>0755,root,root<span class="operator">)</span> %config %<span class="operator">{</span>_sysconfdir<span class="operator">}</span>/rc.d/init.d/%<span class="operator">{</span>name<span class="operator">}</span>
+
+%changelog
+* Thu May 15 2014 Julien Vehent &lt;jvehent&#64;mozilla.com&gt;
+- Build RPM. see changelog at http://haproxy.1wt.eu/git?p<span class="operator">=</span>haproxy.git;a<span class="operator">=</span>log
+</pre>
+<p><cite>build_rpm.sh</cite></p>
+<pre class="code bash literal-block">
+<span class="comment">#!/usr/bin/env bash
+</span>
+<span class="name variable">haproxyversion</span><span class="operator">=</span><span class="literal string double">&quot;1.5-dev25&quot;</span>
+
+<span class="name builtin">echo </span>Installing dependencies
+sudo yum -y install rpmdevtools pcre-devel openssl-devel gcc make
+
+<span class="name builtin">echo </span>Backup up previous build dir
+<span class="operator">[</span> -e ~/rpmbuild <span class="operator">]</span> <span class="operator">&amp;&amp;</span> mv ~/rpmbuild rpmbuild-<span class="keyword">$(</span>date +%s<span class="keyword">)</span>
+
+<span class="name builtin">echo </span>Initializing build dir
+rpmdev-setuptree
+
+<span class="name builtin">echo </span>Download HAProxy <span class="name builtin">source
+</span>wget http://haproxy.1wt.eu/download/1.5/src/devel/haproxy-<span class="name variable">$haproxyversion</span>.tar.gz -O ~/rpmbuild/SOURCES/haproxy-<span class="name variable">$haproxyversion</span>.tar.gz
+
+<span class="name builtin">echo </span>Copying SPEC file over to build dir
+cp haproxy.spec ~/rpmbuild/SPECS/
+
+<span class="name builtin">echo </span>Building RPM
+rpmbuild -bb ~/rpmbuild/SPECS/haproxy.spec
+
+<span class="name builtin">echo </span>Moving RPMs to <span class="name builtin">local </span>dir
+find ~/rpmbuild/RPMS/ -type f -name *.rpm -exec cp <span class="operator">{}</span> . <span class="literal string escape">\;</span>
+
+<span class="name builtin">echo </span>Backing up build dir
+mv ~/rpmbuild rpmbuild-<span class="keyword">$(</span>date +%s<span class="keyword">)</span>
+</pre>
+</div>
+</div>
+</div>
+</body>
+</html>

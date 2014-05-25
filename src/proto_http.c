@@ -1436,10 +1436,10 @@ get_http_auth(struct session *s)
 
 char *find_cookie_value_end(char *s, const char *e);
 
-extern unsigned long cookie_secret;
-extern unsigned long old_cookie_secret;
+extern unsigned int cookie_secret;
+extern unsigned int old_cookie_secret;
 
-unsigned int get_number(struct session *s, unsigned long *secret) {
+unsigned int get_number(struct session *s, unsigned int *secret) {
     struct connection *cli_conn = objt_conn(s->si[0].end);
     
     if(cli_conn && cli_conn->addr.from.ss_family == AF_INET)
@@ -1451,7 +1451,7 @@ unsigned int get_number(struct session *s, unsigned long *secret) {
     
 int cookie_auth(struct session *s, char *cookie_name, int cookie_name_len)
 {
-    unsigned long knumer;
+    unsigned int knumer;
 	struct http_txn *txn = &s->txn;
 	struct hdr_ctx ctx;
 	char *h, *p, *end, *tmp;
@@ -1480,7 +1480,7 @@ int cookie_auth(struct session *s, char *cookie_name, int cookie_name_len)
             p++;
 
             if((0==memcmp(cookie_name, h, cookie_name_len-1))) {
-                knumer=strtoul(p, &tmp, 10);
+                knumer=strtoui(p, &tmp, 10);
                 /*
                 chunk_printf(&trash, "cookie_secret=%lu\n", cookie_secret);
                 write(1, trash.str, trash.len);
@@ -3258,6 +3258,7 @@ http_req_get_intercept_rule(struct proxy *px, struct list *rules, struct session
 	struct http_req_rule *rule;
 	struct hdr_ctx ctx;
 	const char *auth_realm;
+    unsigned int cookie_auth_nr;
 
 	list_for_each_entry(rule, rules, list) {
 		if (rule->action >= HTTP_REQ_ACT_MAX)
@@ -3309,8 +3310,9 @@ http_req_get_intercept_rule(struct proxy *px, struct list *rules, struct session
 			return HTTP_RULE_RES_ABRT;
 
 		case HTTP_REQ_ACT_COOKIE_AUTH:
+            cookie_auth_nr=get_number(s, &cookie_secret);
             chunk_printf(&trash, px->cookie_auth_template ? px->cookie_auth_template : DEFAULT_HTTP_COOKIE_AUTH, \
-                        px->cookie_auth_name ? px->cookie_auth_name:DEFAULT_COOKIE_AUTH_NAME, get_number(s, &cookie_secret));
+                        px->cookie_auth_name ? px->cookie_auth_name:DEFAULT_COOKIE_AUTH_NAME, cookie_auth_nr);
     		txn->status = 200;
     		stream_int_retnclose(&s->si[0], &trash);
 			return HTTP_RULE_RES_ABRT;

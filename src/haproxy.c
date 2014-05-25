@@ -1343,15 +1343,15 @@ static struct task *manage_global_listener_queue(struct task *t)
 	return t;
 }
 
-unsigned long cookie_secret=0;
-unsigned long old_cookie_secret=0;
+unsigned int cookie_secret=199;
+unsigned int old_cookie_secret=99;
 
 #define UPDATE_COOKIE_INTERVAL 5000
 
 static struct task *update_cookie_secret(struct task *t)
 {
     old_cookie_secret=cookie_secret;
-    cookie_secret=now.tv_sec;
+    cookie_secret=now.tv_sec & 0xbad1dea8;
     
 	t->expire = tick_add(now_ms, MS_TO_TICKS(UPDATE_COOKIE_INTERVAL));
 	return t;
