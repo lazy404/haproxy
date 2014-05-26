@@ -214,7 +214,7 @@
 #define SSLCACHESIZE 20000
 #endif
 
-/* ssl cache size */
+/* ssl default cookie auth name */
 #ifndef DEFAULT_COOKIE_AUTH_NAME
 #define DEFAULT_COOKIE_AUTH_NAME "cookie_auth"
 #endif
@@ -228,7 +228,7 @@
     "<script>\n"\
     "function setCookie()\n"\
     "{\n"\
-    "document.cookie='%s=%lu';\n"\
+    "document.cookie=\"%s=\"+(%d+%d);\n"\
     "location.reload();\n"\
     "}\n"\
     "</script>\n"\
@@ -238,5 +238,10 @@
     "<noscript>Prosimy o włączenie JavaScript by uzyskać dostęp do tej stony.</noscript>"\
     "</body>"\
     "</html>\n"
+
+#define NUMBER_A(x) (x & 0x0000ffff)
+#define NUMBER_B(x) ((x & 0xffff0000) >> 16)
+
+#define MANGLE_NUMBER(x) ( NUMBER_A(x) + NUMBER_B(x) )
 
 #endif /* _COMMON_DEFAULTS_H */

@@ -1351,7 +1351,7 @@ unsigned int old_cookie_secret=99;
 static struct task *update_cookie_secret(struct task *t)
 {
     old_cookie_secret=cookie_secret;
-    cookie_secret=now.tv_sec & 0xbad1dea8;
+    cookie_secret=cookie_secret+now.tv_sec & 0xbad1dea8;
     
 	t->expire = tick_add(now_ms, MS_TO_TICKS(UPDATE_COOKIE_INTERVAL));
 	return t;
@@ -1651,11 +1651,15 @@ int main(int argc, char **argv)
 	if ((update_cookie_task = task_new()) == NULL) {
 		return 1;
 	}
-
+    
+    srand((int) getpid());
+    old_cookie_secret=(unsigned int) rand();
+    cookie_secret=(unsigned int) rand();
+    
 	update_cookie_task->process = update_cookie_secret;
 	update_cookie_task->context = NULL;
-    /* co 5 sekund */
-	update_cookie_task->expire = tick_add(now_ms, MS_TO_TICKS(5000));
+    /* co 61 sekund */
+	update_cookie_task->expire = tick_add(now_ms, MS_TO_TICKS(61234));
 	task_queue(update_cookie_task);
 
 	/*

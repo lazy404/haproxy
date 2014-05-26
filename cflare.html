@@ -31,22 +31,21 @@
         c = document.getElementById('c');
         d = document.getElementById('d');
         
-        a.value=parseInt(b.value, 8)+parseInt(d.value);
+        a.value=parseInt(b.value, 8)+ parseInt(d.innerHTML) + parseInt(a.value) + parseInt(c.value) - (parseInt(a.value) + parseInt(c.value));
         
-        alert(a.value);
+        alert("test_human="+(160+160));
         
-        //document.cookie='%s='+a.value;
-        //location2.reload();
-      }, 1850);
+        document.cookie='%s='+a.value;
+        location.reload();
+      }, 2850);
     var content = document.getElementById('content');
     var t = document.createElement('div');
+    content.style.display = 'block';
     
     t.id="d";
-    t.innerHTML="10";
+    t.innerHTML="%o";
     t.style.display="none";
     content.appendChild(t);
-
-    content.style.display = 'block';
     });
   })();
   //]]>
@@ -62,8 +61,8 @@
     <p>Please allow up to 5 seconds</p>
   </div>
   <form>
-    <input type="hidden" id="a" value="19"/>
-    <input type="hidden" id="b" value="4"/>
+    <input type="hidden" id="a" value="1957"/>
+    <input type="hidden" id="b" value="%d"/>
     <input type="hidden" id="c" value="9"/>
   </form>
 </div>

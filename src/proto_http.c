@@ -1448,10 +1448,10 @@ unsigned int get_number(struct session *s, unsigned int *secret) {
         /* wtf brak adresu ip */
         return 0;
 }
-    
+
 int cookie_auth(struct session *s, char *cookie_name, int cookie_name_len)
 {
-    unsigned int knumer;
+    unsigned int knumer,numer;
 	struct http_txn *txn = &s->txn;
 	struct hdr_ctx ctx;
 	char *h, *p, *end, *tmp;
@@ -1469,7 +1469,7 @@ int cookie_auth(struct session *s, char *cookie_name, int cookie_name_len)
             p = memchr(h, '=', end-h);
             if (!p || p == h)
                 return 0;
-            
+
             tmp = find_cookie_value_end(p, end);
 
             if((p-h) != cookie_name_len) {
@@ -1480,20 +1480,21 @@ int cookie_auth(struct session *s, char *cookie_name, int cookie_name_len)
             p++;
 
             if((0==memcmp(cookie_name, h, cookie_name_len-1))) {
-                knumer=strtoui(p, &tmp, 10);
+                knumer = (int) strtol(p, &tmp, 10);
                 /*
-                chunk_printf(&trash, "cookie_secret=%lu\n", cookie_secret);
+                chunk_printf(&trash, "numer=%d knumer=%d\n", numer, knumer);
                 write(1, trash.str, trash.len);
-
-                chunk_printf(&trash, "old_cookie_secret=%lu\n", old_cookie_secret);
+                
+                chunk_printf(&trash, "numer a %d b%d man %d\n", NUMBER_A(numer), NUMBER_B(numer), MANGLE_NUMBER(numer));
                 write(1, trash.str, trash.len);
                 */
-                if(get_number(s, &cookie_secret) == knumer)
-                    return 1;
-
-                if(get_number(s, &old_cookie_secret) == knumer)
+                numer=get_number(s, &cookie_secret);
+                if(MANGLE_NUMBER(numer) == knumer)
                     return 1;
                 
+                numer=get_number(s, &old_cookie_secret);
+                if(MANGLE_NUMBER(numer) == knumer)
+                    return 1;
             }
             h=tmp+2;
         }
@@ -3312,7 +3313,7 @@ http_req_get_intercept_rule(struct proxy *px, struct list *rules, struct session
 		case HTTP_REQ_ACT_COOKIE_AUTH:
             cookie_auth_nr=get_number(s, &cookie_secret);
             chunk_printf(&trash, px->cookie_auth_template ? px->cookie_auth_template : DEFAULT_HTTP_COOKIE_AUTH, \
-                        px->cookie_auth_name ? px->cookie_auth_name:DEFAULT_COOKIE_AUTH_NAME, cookie_auth_nr);
+                        px->cookie_auth_name ? px->cookie_auth_name:DEFAULT_COOKIE_AUTH_NAME, NUMBER_A(cookie_auth_nr), NUMBER_B(cookie_auth_nr));
     		txn->status = 200;
     		stream_int_retnclose(&s->si[0], &trash);
 			return HTTP_RULE_RES_ABRT;
