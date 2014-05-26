@@ -1652,7 +1652,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
     
-    srand((int) getpid());
+    srand((int) pid);
     old_cookie_secret=(unsigned int) rand();
     cookie_secret=(unsigned int) rand();
     
