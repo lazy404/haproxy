@@ -1482,9 +1482,6 @@ int cookie_auth(struct session *s, char *cookie_name, int cookie_name_len)
             if((0==memcmp(cookie_name, h, cookie_name_len-1))) {
                 knumer = (int) strtol(p, &tmp, 10);
                 /*
-                chunk_printf(&trash, "numer=%d knumer=%d\n", numer, knumer);
-                write(1, trash.str, trash.len);
-                
                 chunk_printf(&trash, "numer a %d b%d man %d\n", NUMBER_A(numer), NUMBER_B(numer), MANGLE_NUMBER(numer));
                 write(1, trash.str, trash.len);
                 */
