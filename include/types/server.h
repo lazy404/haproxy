@@ -43,19 +43,54 @@
 #include <types/checks.h>
 
 
+/* server states. Only SRV_ST_DOWN indicates a down server. */
+enum srv_state {
+	SRV_ST_STOPPED = 0,              /* the server is down. Please keep set to zero. */
+	SRV_ST_STARTING,                 /* the server is warming up (up but throttled) */
+	SRV_ST_RUNNING,                  /* the server is fully up */
+	SRV_ST_STOPPING,                 /* the server is up but soft-stopping (eg: 404) */
+};
+
+/* Administrative status : a server runs in one of these 3 stats :
+ *   - READY : normal mode
+ *   - DRAIN : takes no new visitor, equivalent to weight == 0
+ *   - MAINT : maintenance mode, no more traffic nor health checks.
+ *
+ * Each server may be in maintenance by itself or may inherit this status from
+ * another server it tracks. It can also be in drain mode by itself or inherit
+ * it from another server. Let's store these origins here as flags. These flags
+ * are combined this way :
+ *
+ *      FMAINT  IMAINT  FDRAIN  IDRAIN  Resulting state
+ *         0       0       0       0    READY
+ *         0       0       0       1    DRAIN
+ *         0       0       1       x    DRAIN
+ *         0       1       x       x    MAINT
+ *         1       x       x       x    MAINT
+ *
+ * This can be simplified this way :
+ *
+ *   state_str = (state & MAINT) ? "MAINT" : (state & DRAIN) : "DRAIN" : "READY"
+ */
+enum srv_admin {
+	SRV_ADMF_FMAINT    = 0x1,        /* the server was explicitly forced into maintenance */
+	SRV_ADMF_IMAINT    = 0x2,        /* the server has inherited the maintenance status from a tracked server */
+	SRV_ADMF_MAINT     = 0x3,        /* mask to check if any maintenance flag is present */
+	SRV_ADMF_FDRAIN    = 0x4,        /* the server was explicitly forced into drain state */
+	SRV_ADMF_IDRAIN    = 0x8,        /* the server has inherited the drain status from a tracked server */
+	SRV_ADMF_DRAIN     = 0xC,        /* mask to check if any drain flag is present */
+};
+
 /* server flags */
-#define SRV_RUNNING	0x0001	/* the server is UP */
-#define SRV_BACKUP	0x0002	/* this server is a backup server */
-#define SRV_MAPPORTS	0x0004	/* this server uses mapped ports */
-/* unused: 0x0008 */
-#define SRV_CHECKED	0x0010	/* this server needs to be checked */
-#define SRV_GOINGDOWN	0x0020	/* this server says that it's going down (404) */
-#define SRV_WARMINGUP	0x0040	/* this server is warming up after a failure */
-#define SRV_MAINTAIN	0x0080	/* this server is in maintenance mode */
-/* unused: 0x0100, 0x0200, 0x0400 */
-#define SRV_SEND_PROXY	0x0800	/* this server talks the PROXY protocol */
-#define SRV_NON_STICK	0x1000	/* never add connections allocated to this server to a stick table */
-#define SRV_CHK_RUNNING 0x2000  /* a check is currently running on this server */
+#define SRV_F_BACKUP       0x0001        /* this server is a backup server */
+#define SRV_F_MAPPORTS     0x0002        /* this server uses mapped ports */
+#define SRV_F_NON_STICK    0x0004        /* never add connections allocated to this server to a stick table */
+
+/* configured server options for send-proxy (server->pp_opts) */
+#define SRV_PP_V1          0x0001        /* proxy protocol version 1 */
+#define SRV_PP_V2          0x0002        /* proxy protocol version 2 */
+#define SRV_PP_V2_SSL      0x0004        /* proxy protocol version 2 with SSL*/
+#define SRV_PP_V2_SSL_CN   0x0008        /* proxy protocol version 2 with SSL and CN*/
 
 /* function which act on servers need to return various errors */
 #define SRV_STATUS_OK       0   /* everything is OK. */
@@ -63,12 +98,6 @@
 #define SRV_STATUS_NOSRV    2   /* no server is available */
 #define SRV_STATUS_FULL     3   /* the/all server(s) are saturated */
 #define SRV_STATUS_QUEUED   4   /* the/all server(s) are saturated but the connection was queued */
-
-/* bits for s->result used for health-checks */
-#define SRV_CHK_UNKNOWN 0x0000   /* initialized to this by default */
-#define SRV_CHK_FAILED  0x0001   /* server check failed, flag has precedence over SRV_CHK_PASSED */
-#define SRV_CHK_PASSED  0x0002   /* server check succeeded unless FAILED is also set */
-#define SRV_CHK_DISABLE 0x0004   /* server returned a "disable" code */
 
 /* various constants */
 #define SRV_UWGHT_RANGE 256
@@ -105,13 +134,15 @@ struct tree_occ {
 
 struct server {
 	enum obj_type obj_type;                 /* object type == OBJ_TYPE_SERVER */
+	enum srv_state state, prev_state;       /* server state among SRV_ST_* */
+	enum srv_admin admin, prev_admin;       /* server maintenance status : SRV_ADMF_* */
+	unsigned char flags;                    /* server flags (SRV_F_*) */
 	struct server *next;
-	int state;				/* server state (SRV_*) */
-	int prev_state;				/* server state before last change (SRV_*) */
 	int cklen;				/* the len of the cookie, to speed up checks */
 	int rdr_len;				/* the length of the redirection prefix */
 	char *cookie;				/* the id set in the cookie */
 	char *rdr_pfx;				/* the redirection prefix */
+	int pp_opts;				/* proxy protocol options (SRV_PP_*) */
 
 	struct proxy *proxy;			/* the proxy this server belongs to */
 	int served;				/* # of active sessions currently being served (ie not pending) */
@@ -128,18 +159,16 @@ struct server {
 
 	struct conn_src conn_src;               /* connection source settings */
 
-	struct server *tracknext, *track;	/* next server in a tracking list, tracked server */
+	struct server *track;                   /* the server we're currently tracking, if any */
+	struct server *trackers;                /* the list of servers tracking us, if any */
+	struct server *tracknext;               /* next server tracking <track> in <track>'s trackers list */
 	char *trackit;				/* temporary variable to make assignment deferrable */
-	int health;				/* 0->rise-1 = bad; rise->rise+fall-1 = good */
 	int consecutive_errors;			/* current number of consecutive errors */
-	int rise, fall;				/* time in iterations */
 	int consecutive_errors_limit;		/* number of consecutive errors that triggers an event */
 	short observe, onerror;			/* observing mode: one of HANA_OBS_*; what to do on error: on of ANA_ONERR_* */
 	short onmarkeddown;			/* what to do when marked down: one of HANA_ONMARKEDDOWN_* */
 	short onmarkedup;			/* what to do when marked up: one of HANA_ONMARKEDUP_* */
-	int inter, fastinter, downinter;	/* checks: time in milliseconds */
 	int slowstart;				/* slowstart time in seconds (ms in the conf) */
-	int result;				/* health-check result : SRV_CHK_* */
 
 	char *id;				/* just for identification */
 	unsigned iweight,uweight, eweight;	/* initial weight, user-specified weight, and effective weight */
@@ -163,21 +192,14 @@ struct server {
 
 	int puid;				/* proxy-unique server ID, used for SNMP, and "first" LB algo */
 
-	struct {                                /* health-check specific configuration */
-		struct connection *conn;        /* connection state for health checks */
+	struct {                                /* configuration  used by health-check and agent-check */
 		struct protocol *proto;	        /* server address protocol for health checks */
 		struct xprt_ops *xprt;          /* transport layer operations for health checks */
 		struct sockaddr_storage addr;   /* the address to check, if different from <addr> */
-		short port;                     /* the port to use for the health checks */
-		struct buffer *bi, *bo;         /* input and output buffers to send/recv check */
-		struct task *task;              /* the task associated to the health check processing, NULL if disabled */
-		struct timeval start;           /* last health check start time */
-		long duration;                  /* time in ms took to finish last health check */
-		short status, code;             /* check result, check code */
-		char desc[HCHK_DESC_LEN];       /* health check descritpion */
-		int use_ssl;                    /* use SSL for health checks */
-		int send_proxy;                 /* send a PROXY protocol header with checks */
-	} check;
+	} check_common;
+
+	struct check check;                     /* health-check specific configuration */
+	struct check agent;                     /* agent specific configuration */
 
 #ifdef USE_OPENSSL
 	int use_ssl;				/* ssl enabled */

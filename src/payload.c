@@ -16,6 +16,7 @@
 #include <proto/acl.h>
 #include <proto/arg.h>
 #include <proto/channel.h>
+#include <proto/pattern.h>
 #include <proto/payload.h>
 #include <proto/sample.h>
 
@@ -284,10 +285,10 @@ smp_fetch_ssl_hello_sni(struct proxy *px, struct session *s, void *l7, unsigned 
 	if (*data != 0x16)
 		goto not_ssl_hello;
 
-	/* Check for TLSv1 or later (SSL version >= 3.1) */
+	/* Check for SSLv3 or later (SSL version >= 3.0) in the record layer*/
 	if (bleft < 3)
 		goto too_short;
-	if (data[1] < 0x03 || data[2] < 0x01)
+	if (data[1] < 0x03)
 		goto not_ssl_hello;
 
 	if (bleft < 5)
@@ -374,10 +375,10 @@ smp_fetch_ssl_hello_sni(struct proxy *px, struct session *s, void *l7, unsigned 
 			name_len = (data[7] << 8) + data[8];
 
 			if (name_type == 0) { /* hostname */
-				smp->type = SMP_T_CSTR;
+				smp->type = SMP_T_STR;
 				smp->data.str.str = (char *)data + 9;
 				smp->data.str.len = name_len;
-				smp->flags = SMP_F_VOLATILE;
+				smp->flags = SMP_F_VOLATILE | SMP_F_CONST;
 				return 1;
 			}
 		}
@@ -397,8 +398,8 @@ smp_fetch_ssl_hello_sni(struct proxy *px, struct session *s, void *l7, unsigned 
 }
 
 /* Fetch the request RDP cookie identified in <cname>:<clen>, or any cookie if
- * <clen> is empty (cname is then ignored). It returns the data into sample <smp>.
- * Note: this decoder only works with non-wrapping data.
+ * <clen> is empty (cname is then ignored). It returns the data into sample <smp>
+ * of type SMP_T_CSTR. Note: this decoder only works with non-wrapping data.
  */
 int
 fetch_rdp_cookie_name(struct session *s, struct sample *smp, const char *cname, int clen)
@@ -409,8 +410,8 @@ fetch_rdp_cookie_name(struct session *s, struct sample *smp, const char *cname, 
 	if (!s || !s->req)
 		return 0;
 
-	smp->flags = 0;
-	smp->type = SMP_T_CSTR;
+	smp->flags = SMP_F_CONST;
+	smp->type = SMP_T_STR;
 
 	bleft = s->req->buf->i;
 	if (bleft <= 11)
@@ -477,11 +478,11 @@ fetch_rdp_cookie_name(struct session *s, struct sample *smp, const char *cname, 
 		goto not_cookie;
 
 	smp->data.str.len = (char *)data - smp->data.str.str;
-	smp->flags = SMP_F_VOLATILE;
+	smp->flags = SMP_F_VOLATILE | SMP_F_CONST;
 	return 1;
 
  too_short:
-	smp->flags = SMP_F_MAY_CHANGE;
+	smp->flags = SMP_F_MAY_CHANGE | SMP_F_CONST;
  not_cookie:
 	return 0;
 }
@@ -489,7 +490,8 @@ fetch_rdp_cookie_name(struct session *s, struct sample *smp, const char *cname, 
 /* Fetch the request RDP cookie identified in the args, or any cookie if no arg
  * is passed. It is usable both for ACL and for samples. Note: this decoder
  * only works with non-wrapping data. Accepts either 0 or 1 argument. Argument
- * is a string (cookie name), other types will lead to undefined behaviour.
+ * is a string (cookie name), other types will lead to undefined behaviour. The
+ * returned sample has type SMP_T_CSTR.
  */
 int
 smp_fetch_rdp_cookie(struct proxy *px, struct session *s, void *l7, unsigned int opt,
@@ -564,13 +566,13 @@ smp_fetch_payload_lv(struct proxy *px, struct session *s, void *l7, unsigned int
 		goto too_short;
 
 	/* init chunk as read only */
-	smp->type = SMP_T_CBIN;
+	smp->type = SMP_T_BIN;
+	smp->flags = SMP_F_VOLATILE | SMP_F_CONST;
 	chunk_initlen(&smp->data.str, chn->buf->p + buf_offset, 0, buf_size);
-	smp->flags = SMP_F_VOLATILE;
 	return 1;
 
  too_short:
-	smp->flags = SMP_F_MAY_CHANGE;
+	smp->flags = SMP_F_MAY_CHANGE | SMP_F_CONST;
 	return 0;
 }
 
@@ -601,16 +603,16 @@ smp_fetch_payload(struct proxy *px, struct session *s, void *l7, unsigned int op
 		goto too_short;
 
 	/* init chunk as read only */
-	smp->type = SMP_T_CBIN;
+	smp->type = SMP_T_BIN;
+	smp->flags = SMP_F_VOLATILE | SMP_F_CONST;
 	chunk_initlen(&smp->data.str, chn->buf->p + buf_offset, 0, buf_size ? buf_size : (chn->buf->i - buf_offset));
-	smp->flags = SMP_F_VOLATILE;
 	if (!buf_size && !channel_full(chn) && !channel_input_closed(chn))
 		smp->flags |= SMP_F_MAY_CHANGE;
 
 	return 1;
 
  too_short:
-	smp->flags = SMP_F_MAY_CHANGE;
+	smp->flags = SMP_F_MAY_CHANGE | SMP_F_CONST;
 	return 0;
 }
 
@@ -648,27 +650,27 @@ static int val_payload_lv(struct arg *arg, char **err_msg)
  * instance IPv4/IPv6 must be declared IPv4.
  */
 static struct sample_fetch_kw_list smp_kws = {ILH, {
-	{ "payload",             smp_fetch_payload,        ARG2(2,UINT,UINT),      NULL,           SMP_T_CBIN, SMP_USE_L6REQ|SMP_USE_L6RES },
-	{ "payload_lv",          smp_fetch_payload_lv,     ARG3(2,UINT,UINT,SINT), val_payload_lv, SMP_T_CBIN, SMP_USE_L6REQ|SMP_USE_L6RES },
-	{ "rdp_cookie",          smp_fetch_rdp_cookie,     ARG1(0,STR),            NULL,           SMP_T_CSTR, SMP_USE_L6REQ },
+	{ "payload",             smp_fetch_payload,        ARG2(2,UINT,UINT),      NULL,           SMP_T_BIN,  SMP_USE_L6REQ|SMP_USE_L6RES },
+	{ "payload_lv",          smp_fetch_payload_lv,     ARG3(2,UINT,UINT,SINT), val_payload_lv, SMP_T_BIN,  SMP_USE_L6REQ|SMP_USE_L6RES },
+	{ "rdp_cookie",          smp_fetch_rdp_cookie,     ARG1(0,STR),            NULL,           SMP_T_STR,  SMP_USE_L6REQ },
 	{ "rdp_cookie_cnt",      smp_fetch_rdp_cookie_cnt, ARG1(0,STR),            NULL,           SMP_T_UINT, SMP_USE_L6REQ },
 	{ "rep_ssl_hello_type",  smp_fetch_ssl_hello_type, 0,                      NULL,           SMP_T_UINT, SMP_USE_L6RES },
 	{ "req_len",             smp_fetch_len,            0,                      NULL,           SMP_T_UINT, SMP_USE_L6REQ },
 	{ "req_ssl_hello_type",  smp_fetch_ssl_hello_type, 0,                      NULL,           SMP_T_UINT, SMP_USE_L6REQ },
-	{ "req_ssl_sni",         smp_fetch_ssl_hello_sni,  0,                      NULL,           SMP_T_CSTR, SMP_USE_L6REQ },
+	{ "req_ssl_sni",         smp_fetch_ssl_hello_sni,  0,                      NULL,           SMP_T_STR,  SMP_USE_L6REQ },
 	{ "req_ssl_ver",         smp_fetch_req_ssl_ver,    0,                      NULL,           SMP_T_UINT, SMP_USE_L6REQ },
 
 	{ "req.len",             smp_fetch_len,            0,                      NULL,           SMP_T_UINT, SMP_USE_L6REQ },
-	{ "req.payload",         smp_fetch_payload,        ARG2(2,UINT,UINT),      NULL,           SMP_T_CBIN, SMP_USE_L6REQ },
-	{ "req.payload_lv",      smp_fetch_payload_lv,     ARG3(2,UINT,UINT,SINT), val_payload_lv, SMP_T_CBIN, SMP_USE_L6REQ },
-	{ "req.rdp_cookie",      smp_fetch_rdp_cookie,     ARG1(0,STR),            NULL,           SMP_T_CSTR, SMP_USE_L6REQ },
+	{ "req.payload",         smp_fetch_payload,        ARG2(2,UINT,UINT),      NULL,           SMP_T_BIN,  SMP_USE_L6REQ },
+	{ "req.payload_lv",      smp_fetch_payload_lv,     ARG3(2,UINT,UINT,SINT), val_payload_lv, SMP_T_BIN,  SMP_USE_L6REQ },
+	{ "req.rdp_cookie",      smp_fetch_rdp_cookie,     ARG1(0,STR),            NULL,           SMP_T_STR,  SMP_USE_L6REQ },
 	{ "req.rdp_cookie_cnt",  smp_fetch_rdp_cookie_cnt, ARG1(0,STR),            NULL,           SMP_T_UINT, SMP_USE_L6REQ },
 	{ "req.ssl_hello_type",  smp_fetch_ssl_hello_type, 0,                      NULL,           SMP_T_UINT, SMP_USE_L6REQ },
-	{ "req.ssl_sni",         smp_fetch_ssl_hello_sni,  0,                      NULL,           SMP_T_CSTR, SMP_USE_L6REQ },
+	{ "req.ssl_sni",         smp_fetch_ssl_hello_sni,  0,                      NULL,           SMP_T_STR,  SMP_USE_L6REQ },
 	{ "req.ssl_ver",         smp_fetch_req_ssl_ver,    0,                      NULL,           SMP_T_UINT, SMP_USE_L6REQ },
 	{ "res.len",             smp_fetch_len,            0,                      NULL,           SMP_T_UINT, SMP_USE_L6RES },
-	{ "res.payload",         smp_fetch_payload,        ARG2(2,UINT,UINT),      NULL,           SMP_T_CBIN, SMP_USE_L6RES },
-	{ "res.payload_lv",      smp_fetch_payload_lv,     ARG3(2,UINT,UINT,SINT), val_payload_lv, SMP_T_CBIN, SMP_USE_L6RES },
+	{ "res.payload",         smp_fetch_payload,        ARG2(2,UINT,UINT),      NULL,           SMP_T_BIN,  SMP_USE_L6RES },
+	{ "res.payload_lv",      smp_fetch_payload_lv,     ARG3(2,UINT,UINT,SINT), val_payload_lv, SMP_T_BIN,  SMP_USE_L6RES },
 	{ "res.ssl_hello_type",  smp_fetch_ssl_hello_type, 0,                      NULL,           SMP_T_UINT, SMP_USE_L6RES },
 	{ "wait_end",            smp_fetch_wait_end,       0,                      NULL,           SMP_T_BOOL, SMP_USE_INTRN },
 	{ /* END */ },
@@ -679,12 +681,13 @@ static struct sample_fetch_kw_list smp_kws = {ILH, {
  * Please take care of keeping this list alphabetically sorted.
  */
 static struct acl_kw_list acl_kws = {ILH, {
-	{ "payload",            "req.payload",        acl_parse_str,        acl_match_str     },
-	{ "payload_lv",         "req.payload_lv",     acl_parse_str,        acl_match_str     },
-	{ "req_rdp_cookie",     "req.rdp_cookie",     acl_parse_str,        acl_match_str     },
-	{ "req_rdp_cookie_cnt", "req.rdp_cookie_cnt", acl_parse_int,        acl_match_int     },
-	{ "req_ssl_sni",        "req.ssl_sni",        acl_parse_str,        acl_match_str     },
-	{ "req_ssl_ver",        "req.ssl_ver",        acl_parse_dotted_ver, acl_match_int     },
+	{ "payload",            "req.payload",        PAT_MATCH_BIN },
+	{ "payload_lv",         "req.payload_lv",     PAT_MATCH_BIN },
+	{ "req_rdp_cookie",     "req.rdp_cookie",     PAT_MATCH_STR },
+	{ "req_rdp_cookie_cnt", "req.rdp_cookie_cnt", PAT_MATCH_INT },
+	{ "req_ssl_sni",        "req.ssl_sni",        PAT_MATCH_STR },
+	{ "req_ssl_ver",        "req.ssl_ver",        PAT_MATCH_INT, pat_parse_dotted_ver },
+	{ "req.ssl_ver",        "req.ssl_ver",        PAT_MATCH_INT, pat_parse_dotted_ver },
 	{ /* END */ },
 }};
 

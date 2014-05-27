@@ -1,12 +1,8 @@
-Medium-long term roadmap - 2013/06/17
+Medium-long term roadmap - 2014/05/10
 
 Legend: '+' = done, '-' = todo, '*' = done except doc
 
 1.5 (ETA 2013/12/31) :
-  - server-side HTTP keepalive
-    => maybe with limitation to only reuse connections that don't depend
-       on layer7 in a first time (just check the target).
-
   - POST parameter extraction and size/speed measurement to use in ACLs
 
   - return-html code xxx [ file "xxx" | text "xxx" ] if <acl>
@@ -15,13 +11,8 @@ Legend: '+' = done, '-' = todo, '*' = done except doc
 
   - avg connect time, response time, connect errors, response errors in stats
 
-  - add a last activity date for each server (req/resp) that will be
-    displayed in the stats. It will be useful with soft stop.
-
   - add the ability to only dump response errors to more easily detect
     anomalies without being polluted with attacks in requests.
-
-  - add support for server-side unix sockets
 
   - have multi-criteria analysers which subscribe to req flags, rsp flags, and
     stream interface changes. This would result in a single analyser to wait
@@ -35,18 +26,44 @@ Legend: '+' = done, '-' = todo, '*' = done except doc
     based on request matching. Each session will have one ebtree node to be
     attached to whatever queue the session is waiting in.
 
-  - add support for complex pattern extraction rules :
+  - add a flag in logs to indicate keep-alive requests ?
+
+  - make it possible to condition a timeout on an ACL (dynamic timeouts)
+
+  - forwardfor/originalto except with IPv6
+
+  - remove lots of remaining Alert() calls or ensure that they forward to
+    send_log() after the fork.
+
+  - tcp-request session
+
+  - tcp-request session expect-proxy {L4|L5} if ...
+
+  - http-request track-sc* to avoid having the ugly "if !HTTP" in tcp-request
+
+DONE:
+  * half-closed timeouts ?
+
+  * add support for server-side unix sockets
+
+  * server-side HTTP keepalive
+    => maybe with limitation to only reuse connections that don't depend
+       on layer7 in a first time (just check the target).
+
+  * add support for complex pattern extraction rules :
 
        pattern = <pattern_term>
                | '{' pattern_expr '}'
 
        pattern_expr = <pattern_term> [ <transform> ... ]
+    => changed to <sample>[,<conv>]*
 
-  - support loading data sets from files
-      + present/not present (eg: netmasks)
-      - pattern conversion per prefixes. Eg: convert src IP to country.
+  * support loading data sets from files
+      * present/not present (eg: netmasks)
+      * pattern conversion per prefixes. Eg: convert src IP to country.
+      => maps
 
-  - what to do with data after a POST and how to detect some data were
+  * what to do with data after a POST and how to detect some data were
     received when responding ? In theory we should read everything because
     the TCP stack does not notify us that the FIN was acked. In practice,
     reading just before closing should be enough. Right now we simply read
@@ -55,30 +72,8 @@ Legend: '+' = done, '-' = todo, '*' = done except doc
        output queue on each I/O and where it can be stolen if fds are
        missing.
 
-  - half-closed timeouts ?
+  * tcp-request {connection|session} expect-proxy {L4|L5} if ...
 
-  - add a flag in logs to indicate keep-alive requests ?
-
-  - make it possible to condition a timeout on an ACL (dynamic timeouts)
-
-  - forwardfor/originalto except with IPv6
-
-  - have a callback function which would be called after a server is selected,
-    for header post-processing. That would be mainly used to remove then add
-    the server's name or cookie in a header so that the server knows it.
-
-  - remove lots of remaining Alert() calls or ensure that they forward to
-    send_log() after the fork.
-
-  - tcp-request session
-
-  - http-request track-sc* to avoid having the ugly "if !HTTP" in tcp-request
-
-  - tcp-request {connection|session} expect-proxy {L4|L5} if ...
-
-  - compression : to be fixed
-
-DONE:
   * rename L4 acls as L6 ACLs when some content is involved
 
   * add new L4 ACL checks immediately after accept, before even allocating the
@@ -143,6 +138,15 @@ DONE:
     flag in every session which preempts any other processing and wake the
     session up.
 
+  * add a last activity date for each server (req/resp) that will be
+    displayed in the stats. It will be useful with soft stop.
+
+  * compression : to be fixed
+
+  * ACL feeding via the UNIX socket
+
+  * lookup tables (eg: map IP to country)
+
 1.6 (will probably change anyway) :
   - wait on resource (time, mem, CPU, socket, buffers, server's conn, server's rate, ...)
 
@@ -187,14 +191,16 @@ Old, maybe obsolete points
 
  - initcwnd parameter for bind sockets : needed in kernel first
 
+ - have a callback function which would be called after a server is selected,
+   for header post-processing. That would be mainly used to remove then add
+   the server's name or cookie in a header so that the server knows it.
+
 Unsorted :
   - outgoing log load-balancing (round-robin or hash among multiple servers)
   - internal socket for "server XXX frontend:name"
-  - ACL feeding via the UNIX socket
   - HTTP/2.0
   - DNS requests on health checks
   - XML inspection (content-switching for SOAP requests)
-  - lookup tables (eg: map IP to country)
   - sync all stick-tables data, not just serverid.
   - request, session and user variables
   - random cookie generator

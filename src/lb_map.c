@@ -28,11 +28,10 @@ static void map_set_server_status_down(struct server *srv)
 {
 	struct proxy *p = srv->proxy;
 
-	if (srv->state == srv->prev_state &&
-	    srv->eweight == srv->prev_eweight)
+	if (!srv_lb_status_changed(srv))
 		return;
 
-	if (srv_is_usable(srv->state, srv->eweight))
+	if (srv_is_usable(srv))
 		goto out_update_state;
 
 	/* FIXME: could be optimized since we know what changed */
@@ -40,8 +39,7 @@ static void map_set_server_status_down(struct server *srv)
 	update_backend_weight(p);
 	p->lbprm.map.state |= LB_MAP_RECALC;
  out_update_state:
-	srv->prev_state = srv->state;
-	srv->prev_eweight = srv->eweight;
+	srv_lb_commit_status(srv);
 }
 
 /* This function updates the map according to server <srv>'s new state */
@@ -49,11 +47,10 @@ static void map_set_server_status_up(struct server *srv)
 {
 	struct proxy *p = srv->proxy;
 
-	if (srv->state == srv->prev_state &&
-	    srv->eweight == srv->prev_eweight)
+	if (!srv_lb_status_changed(srv))
 		return;
 
-	if (!srv_is_usable(srv->state, srv->eweight))
+	if (!srv_is_usable(srv))
 		goto out_update_state;
 
 	/* FIXME: could be optimized since we know what changed */
@@ -61,8 +58,7 @@ static void map_set_server_status_up(struct server *srv)
 	update_backend_weight(p);
 	p->lbprm.map.state |= LB_MAP_RECALC;
  out_update_state:
-	srv->prev_state = srv->state;
-	srv->prev_eweight = srv->eweight;
+	srv_lb_commit_status(srv);
 }
 
 /* This function recomputes the server map for proxy px. It relies on
@@ -86,9 +82,9 @@ void recalc_server_map(struct proxy *px)
 
 	/* here we *know* that we have some servers */
 	if (px->srv_act)
-		flag = SRV_RUNNING;
+		flag = 0;
 	else
-		flag = SRV_RUNNING | SRV_BACKUP;
+		flag = SRV_F_BACKUP;
 
 	/* this algorithm gives priority to the first server, which means that
 	 * it will respect the declaration order for equivalent weights, and
@@ -103,9 +99,8 @@ void recalc_server_map(struct proxy *px)
 		int max = 0;
 		best = NULL;
 		for (cur = px->srv; cur; cur = cur->next) {
-			if (cur->eweight &&
-			    flag == (cur->state &
-				     (SRV_RUNNING | SRV_GOINGDOWN | SRV_BACKUP))) {
+			if ((cur->flags & SRV_F_BACKUP) == flag &&
+			    srv_is_usable(cur)) {
 				int v;
 
 				/* If we are forced to return only one server, we don't want to
@@ -180,10 +175,10 @@ void init_server_map(struct proxy *p)
 
 	act = bck = 0;
 	for (srv = p->srv; srv; srv = srv->next) {
-		srv->eweight = srv->uweight / pgcd;
-		srv->prev_eweight = srv->eweight;
-		srv->prev_state = srv->state;
-		if (srv->state & SRV_BACKUP)
+		srv->eweight = (srv->uweight * p->lbprm.wdiv + p->lbprm.wmult - 1) / p->lbprm.wmult;
+		srv_lb_commit_status(srv);
+
+		if (srv->flags & SRV_F_BACKUP)
 			bck += srv->eweight;
 		else
 			act += srv->eweight;

@@ -49,30 +49,25 @@ int conn_fd_handler(int fd)
 	conn_refresh_polling_flags(conn);
 	flags = conn->flags & ~CO_FL_ERROR; /* ensure to call the wake handler upon error */
 
-	if (unlikely(conn->flags & CO_FL_ERROR))
-		goto leave;
-
  process_handshake:
 	/* The handshake callbacks are called in sequence. If either of them is
 	 * missing something, it must enable the required polling at the socket
 	 * layer of the connection. Polling state is not guaranteed when entering
 	 * these handlers, so any handshake handler which does not complete its
-	 * work must explicitly disable events it's not interested in.
+	 * work must explicitly disable events it's not interested in. Error
+	 * handling is also performed here in order to reduce the number of tests
+	 * around.
 	 */
-	while (unlikely(conn->flags & CO_FL_HANDSHAKE)) {
-		if (unlikely(conn->flags & (CO_FL_ERROR|CO_FL_WAIT_RD|CO_FL_WAIT_WR)))
+	while (unlikely(conn->flags & (CO_FL_HANDSHAKE | CO_FL_ERROR))) {
+		if (unlikely(conn->flags & CO_FL_ERROR))
 			goto leave;
 
 		if (conn->flags & CO_FL_ACCEPT_PROXY)
 			if (!conn_recv_proxy(conn, CO_FL_ACCEPT_PROXY))
 				goto leave;
 
-		if (conn->flags & CO_FL_SI_SEND_PROXY)
-			if (!conn_si_send_proxy(conn, CO_FL_SI_SEND_PROXY))
-				goto leave;
-
-		if (conn->flags & CO_FL_LOCAL_SPROXY)
-			if (!conn_local_send_proxy(conn, CO_FL_LOCAL_SPROXY))
+		if (conn->flags & CO_FL_SEND_PROXY)
+			if (!conn_si_send_proxy(conn, CO_FL_SEND_PROXY))
 				goto leave;
 #ifdef USE_OPENSSL
 		if (conn->flags & CO_FL_SSL_WAIT_HS)
@@ -97,9 +92,8 @@ int conn_fd_handler(int fd)
 	 * that we must absolutely test conn->xprt at each step in case it suddenly
 	 * changes due to a quick unexpected close().
 	 */
-	if ((fdtab[fd].ev & (FD_POLL_IN | FD_POLL_HUP | FD_POLL_ERR)) &&
-	    conn->xprt &&
-	    !(conn->flags & (CO_FL_WAIT_RD|CO_FL_WAIT_ROOM|CO_FL_ERROR|CO_FL_HANDSHAKE))) {
+	if (conn->xprt && fd_recv_ready(fd) &&
+	    ((conn->flags & (CO_FL_DATA_RD_ENA|CO_FL_WAIT_ROOM|CO_FL_ERROR|CO_FL_HANDSHAKE)) == CO_FL_DATA_RD_ENA)) {
 		/* force detection of a flag change : it's impossible to have both
 		 * CONNECTED and WAIT_CONN so we're certain to trigger a change.
 		 */
@@ -107,9 +101,8 @@ int conn_fd_handler(int fd)
 		conn->data->recv(conn);
 	}
 
-	if ((fdtab[fd].ev & (FD_POLL_OUT | FD_POLL_ERR)) &&
-	    conn->xprt &&
-	    !(conn->flags & (CO_FL_WAIT_WR|CO_FL_WAIT_DATA|CO_FL_ERROR|CO_FL_HANDSHAKE))) {
+	if (conn->xprt && fd_send_ready(fd) &&
+	    ((conn->flags & (CO_FL_DATA_WR_ENA|CO_FL_WAIT_DATA|CO_FL_ERROR|CO_FL_HANDSHAKE)) == CO_FL_DATA_WR_ENA)) {
 		/* force detection of a flag change : it's impossible to have both
 		 * CONNECTED and WAIT_CONN so we're certain to trigger a change.
 		 */
@@ -117,16 +110,13 @@ int conn_fd_handler(int fd)
 		conn->data->send(conn);
 	}
 
-	if (unlikely(conn->flags & CO_FL_ERROR))
-		goto leave;
-
 	/* It may happen during the data phase that a handshake is
 	 * enabled again (eg: SSL)
 	 */
-	if (unlikely(conn->flags & CO_FL_HANDSHAKE))
+	if (unlikely(conn->flags & (CO_FL_HANDSHAKE | CO_FL_ERROR)))
 		goto process_handshake;
 
-	if (unlikely(conn->flags & CO_FL_WAIT_L4_CONN) && !(conn->flags & CO_FL_WAIT_WR)) {
+	if (unlikely(conn->flags & CO_FL_WAIT_L4_CONN)) {
 		/* still waiting for a connection to establish and nothing was
 		 * attempted yet to probe the connection. Then let's retry the
 		 * connect().
@@ -167,12 +157,11 @@ void conn_update_data_polling(struct connection *c)
 {
 	unsigned int f = c->flags;
 
+	if (!conn_ctrl_ready(c))
+		return;
+
 	/* update read status if needed */
-	if (unlikely((f & (CO_FL_DATA_RD_ENA|CO_FL_WAIT_RD)) == (CO_FL_DATA_RD_ENA|CO_FL_WAIT_RD))) {
-		fd_poll_recv(c->t.sock.fd);
-		f |= CO_FL_CURR_RD_ENA;
-	}
-	else if (unlikely((f & (CO_FL_CURR_RD_ENA|CO_FL_DATA_RD_ENA)) == CO_FL_DATA_RD_ENA)) {
+	if (unlikely((f & (CO_FL_CURR_RD_ENA|CO_FL_DATA_RD_ENA)) == CO_FL_DATA_RD_ENA)) {
 		fd_want_recv(c->t.sock.fd);
 		f |= CO_FL_CURR_RD_ENA;
 	}
@@ -182,11 +171,7 @@ void conn_update_data_polling(struct connection *c)
 	}
 
 	/* update write status if needed */
-	if (unlikely((f & (CO_FL_DATA_WR_ENA|CO_FL_WAIT_WR)) == (CO_FL_DATA_WR_ENA|CO_FL_WAIT_WR))) {
-		fd_poll_send(c->t.sock.fd);
-		f |= CO_FL_CURR_WR_ENA;
-	}
-	else if (unlikely((f & (CO_FL_CURR_WR_ENA|CO_FL_DATA_WR_ENA)) == CO_FL_DATA_WR_ENA)) {
+	if (unlikely((f & (CO_FL_CURR_WR_ENA|CO_FL_DATA_WR_ENA)) == CO_FL_DATA_WR_ENA)) {
 		fd_want_send(c->t.sock.fd);
 		f |= CO_FL_CURR_WR_ENA;
 	}
@@ -194,7 +179,7 @@ void conn_update_data_polling(struct connection *c)
 		fd_stop_send(c->t.sock.fd);
 		f &= ~CO_FL_CURR_WR_ENA;
 	}
-	c->flags = f & ~(CO_FL_WAIT_RD | CO_FL_WAIT_WR);
+	c->flags = f;
 }
 
 /* Update polling on connection <c>'s file descriptor depending on its current
@@ -207,12 +192,11 @@ void conn_update_sock_polling(struct connection *c)
 {
 	unsigned int f = c->flags;
 
+	if (!conn_ctrl_ready(c))
+		return;
+
 	/* update read status if needed */
-	if (unlikely((f & (CO_FL_SOCK_RD_ENA|CO_FL_WAIT_RD)) == (CO_FL_SOCK_RD_ENA|CO_FL_WAIT_RD))) {
-		fd_poll_recv(c->t.sock.fd);
-		f |= CO_FL_CURR_RD_ENA;
-	}
-	else if (unlikely((f & (CO_FL_CURR_RD_ENA|CO_FL_SOCK_RD_ENA)) == CO_FL_SOCK_RD_ENA)) {
+	if (unlikely((f & (CO_FL_CURR_RD_ENA|CO_FL_SOCK_RD_ENA)) == CO_FL_SOCK_RD_ENA)) {
 		fd_want_recv(c->t.sock.fd);
 		f |= CO_FL_CURR_RD_ENA;
 	}
@@ -222,11 +206,7 @@ void conn_update_sock_polling(struct connection *c)
 	}
 
 	/* update write status if needed */
-	if (unlikely((f & (CO_FL_SOCK_WR_ENA|CO_FL_WAIT_WR)) == (CO_FL_SOCK_WR_ENA|CO_FL_WAIT_WR))) {
-		fd_poll_send(c->t.sock.fd);
-		f |= CO_FL_CURR_WR_ENA;
-	}
-	else if (unlikely((f & (CO_FL_CURR_WR_ENA|CO_FL_SOCK_WR_ENA)) == CO_FL_SOCK_WR_ENA)) {
+	if (unlikely((f & (CO_FL_CURR_WR_ENA|CO_FL_SOCK_WR_ENA)) == CO_FL_SOCK_WR_ENA)) {
 		fd_want_send(c->t.sock.fd);
 		f |= CO_FL_CURR_WR_ENA;
 	}
@@ -234,7 +214,7 @@ void conn_update_sock_polling(struct connection *c)
 		fd_stop_send(c->t.sock.fd);
 		f &= ~CO_FL_CURR_WR_ENA;
 	}
-	c->flags = f & ~(CO_FL_WAIT_RD | CO_FL_WAIT_WR);
+	c->flags = f;
 }
 
 /* This handshake handler waits a PROXY protocol header at the beginning of the
@@ -268,13 +248,19 @@ int conn_recv_proxy(struct connection *conn, int flag)
 	if (conn->flags & CO_FL_SOCK_RD_SH)
 		goto fail;
 
+	if (!conn_ctrl_ready(conn))
+		goto fail;
+
+	if (!fd_recv_ready(conn->t.sock.fd))
+		return 0;
+
 	do {
 		trash.len = recv(conn->t.sock.fd, trash.str, trash.size, MSG_PEEK);
 		if (trash.len < 0) {
 			if (errno == EINTR)
 				continue;
 			if (errno == EAGAIN) {
-				__conn_sock_poll_recv(conn);
+				fd_cant_recv(conn->t.sock.fd);
 				return 0;
 			}
 			goto recv_abort;
@@ -442,6 +428,7 @@ int conn_recv_proxy(struct connection *conn, int flag)
 
  recv_abort:
 	conn->err_code = CO_ER_PRX_ABORT;
+	conn->flags |= CO_FL_SOCK_RD_SH | CO_FL_SOCK_WR_SH;
 	goto fail;
 
  fail:
@@ -450,17 +437,35 @@ int conn_recv_proxy(struct connection *conn, int flag)
 	return 0;
 }
 
+int make_proxy_line(char *buf, int buf_len, struct server *srv, struct connection *remote)
+{
+	int ret = 0;
+
+	if (srv && (srv->pp_opts & SRV_PP_V2)) {
+		ret = make_proxy_line_v2(buf, buf_len, srv, remote);
+	}
+	else {
+		if (remote)
+			ret = make_proxy_line_v1(buf, buf_len, &remote->addr.from, &remote->addr.to);
+		else
+			ret = make_proxy_line_v1(buf, buf_len, NULL, NULL);
+	}
+
+	return ret;
+}
+
 /* Makes a PROXY protocol line from the two addresses. The output is sent to
  * buffer <buf> for a maximum size of <buf_len> (including the trailing zero).
  * It returns the number of bytes composing this line (including the trailing
  * LF), or zero in case of failure (eg: not enough space). It supports TCP4,
- * TCP6 and "UNKNOWN" formats.
+ * TCP6 and "UNKNOWN" formats. If any of <src> or <dst> is null, UNKNOWN is
+ * emitted as well.
  */
-int make_proxy_line(char *buf, int buf_len, struct sockaddr_storage *src, struct sockaddr_storage *dst)
+int make_proxy_line_v1(char *buf, int buf_len, struct sockaddr_storage *src, struct sockaddr_storage *dst)
 {
 	int ret = 0;
 
-	if (src->ss_family == dst->ss_family && src->ss_family == AF_INET) {
+	if (src && dst && src->ss_family == dst->ss_family && src->ss_family == AF_INET) {
 		ret = snprintf(buf + ret, buf_len - ret, "PROXY TCP4 ");
 		if (ret >= buf_len)
 			return 0;
@@ -490,7 +495,7 @@ int make_proxy_line(char *buf, int buf_len, struct sockaddr_storage *src, struct
 		if (ret >= buf_len)
 			return 0;
 	}
-	else if (src->ss_family == dst->ss_family && src->ss_family == AF_INET6) {
+	else if (src && dst && src->ss_family == dst->ss_family && src->ss_family == AF_INET6) {
 		ret = snprintf(buf + ret, buf_len - ret, "PROXY TCP6 ");
 		if (ret >= buf_len)
 			return 0;
@@ -529,73 +534,112 @@ int make_proxy_line(char *buf, int buf_len, struct sockaddr_storage *src, struct
 	return ret;
 }
 
-/* This callback is used to send a valid PROXY protocol line to a socket being
- * established from the local machine. It sets the protocol addresses to the
- * local and remote address. This is typically used with health checks or when
- * it is not possible to determine the other end's address. It returns 0 if it
- * fails in a fatal way or needs to poll to go further, otherwise it returns
- * non-zero and removes itself from the connection's flags (the bit is provided
- * in <flag> by the caller). It is designed to be called by the connection
- * handler and relies on it to commit polling changes. Note that this function
- * expects to be able to send the whole line at once, which should always be
- * possible since it is supposed to start at the first byte of the outgoing
- * data segment.
- */
-int conn_local_send_proxy(struct connection *conn, unsigned int flag)
+#ifdef USE_OPENSSL
+static int make_tlv(char *dest, int dest_len, char type, uint16_t length, char *value)
 {
-	int ret;
+	struct tlv *tlv;
 
-	/* we might have been called just after an asynchronous shutw */
-	if (conn->flags & CO_FL_SOCK_WR_SH)
-		goto out_error;
+	if (!dest || (length + sizeof(*tlv) > dest_len))
+		return 0;
 
-	/* The target server expects a PROXY line to be sent first. Retrieving
-	 * local or remote addresses may fail until the connection is established.
-	 */
-	conn_get_from_addr(conn);
-	if (!(conn->flags & CO_FL_ADDR_FROM_SET))
-		goto out_wait;
+	tlv = (struct tlv *)dest;
 
-	conn_get_to_addr(conn);
-	if (!(conn->flags & CO_FL_ADDR_TO_SET))
-		goto out_wait;
+	tlv->type = type;
+	tlv->length_hi = length >> 8;
+	tlv->length_lo = length & 0x00ff;
+	memcpy(tlv->value, value, length);
+	return length + sizeof(*tlv);
+}
+#endif
 
-	trash.len = make_proxy_line(trash.str, trash.size, &conn->addr.from, &conn->addr.to);
-	if (!trash.len)
-		goto out_error;
+int make_proxy_line_v2(char *buf, int buf_len, struct server *srv, struct connection *remote)
+{
+	const char pp2_signature[12] = {0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A};
+	int ret = 0;
+	struct proxy_hdr_v2 *hdr_p = (struct proxy_hdr_v2 *)buf;
+	union proxy_addr *addr_p = (union proxy_addr *)(buf + PP2_HEADER_LEN);
+	struct sockaddr_storage null_addr = {0};
+	struct sockaddr_storage *src = &null_addr;
+	struct sockaddr_storage *dst = &null_addr;
+#ifdef USE_OPENSSL
+	int tlv_len = 0;
+	char *value = NULL;
+	struct tlv_ssl *tlv;
+	int ssl_tlv_len = 0;
+#endif
 
-	/* we have to send the whole trash. If the data layer has a
-	 * pending write, we'll also set MSG_MORE.
-	 */
-	ret = send(conn->t.sock.fd, trash.str, trash.len, (conn->flags & CO_FL_DATA_WR_ENA) ? MSG_MORE : 0);
+	if (buf_len < PP2_HEADER_LEN)
+		return 0;
+	memcpy(hdr_p->sig, pp2_signature, PP2_SIGNATURE_LEN);
 
-	if (ret == 0)
-		goto out_wait;
-
-	if (ret < 0) {
-		if (errno == EAGAIN || errno == ENOTCONN)
-			goto out_wait;
-		goto out_error;
+	if (remote) {
+		src = &remote->addr.from;
+		dst = &remote->addr.to;
+	}
+	if (src && dst && src->ss_family == dst->ss_family && src->ss_family == AF_INET) {
+		if (buf_len < PP2_HDR_LEN_INET)
+			return 0;
+		hdr_p->cmd = PP2_VERSION | PP2_CMD_PROXY;
+		hdr_p->fam = PP2_FAM_INET | PP2_TRANS_STREAM;
+		addr_p->ipv4_addr.src_addr = ((struct sockaddr_in *)src)->sin_addr.s_addr;
+		addr_p->ipv4_addr.dst_addr = ((struct sockaddr_in *)dst)->sin_addr.s_addr;
+		addr_p->ipv4_addr.src_port = ((struct sockaddr_in *)src)->sin_port;
+		addr_p->ipv4_addr.dst_port = ((struct sockaddr_in *)dst)->sin_port;
+		ret = PP2_HDR_LEN_INET;
+	}
+	else if (src && dst && src->ss_family == dst->ss_family && src->ss_family == AF_INET6) {
+		if (buf_len < PP2_HDR_LEN_INET6)
+			return 0;
+		hdr_p->cmd = PP2_VERSION | PP2_CMD_PROXY;
+		hdr_p->fam = PP2_FAM_INET6 | PP2_TRANS_STREAM;
+		memcpy(addr_p->ipv6_addr.src_addr, &((struct sockaddr_in6 *)src)->sin6_addr, 16);
+		memcpy(addr_p->ipv6_addr.dst_addr, &((struct sockaddr_in6 *)dst)->sin6_addr, 16);
+		addr_p->ipv6_addr.src_port = ((struct sockaddr_in6 *)src)->sin6_port;
+		addr_p->ipv6_addr.dst_port = ((struct sockaddr_in6 *)dst)->sin6_port;
+		ret = PP2_HDR_LEN_INET6;
+	}
+	else {
+		if (buf_len < PP2_HDR_LEN_UNSPEC)
+			return 0;
+		hdr_p->cmd = PP2_VERSION | PP2_CMD_LOCAL;
+		hdr_p->fam = PP2_FAM_UNSPEC | PP2_TRANS_UNSPEC;
+		ret = PP2_HDR_LEN_UNSPEC;
 	}
 
-	if (ret != trash.len)
-		goto out_error;
+#ifdef USE_OPENSSL
+	if (srv->pp_opts & SRV_PP_V2_SSL) {
+		if ((buf_len - ret) < sizeof(struct tlv_ssl))
+			return 0;
+		tlv = (struct tlv_ssl *)&buf[ret];
+		memset(tlv, 0, sizeof(struct tlv_ssl));
+		ssl_tlv_len += sizeof(struct tlv_ssl);
+		tlv->tlv.type = PP2_TYPE_SSL;
+		if (ssl_sock_is_ssl(remote)) {
+			tlv->client |= PP2_CLIENT_SSL;
+			value = ssl_sock_get_version(remote);
+			if (value) {
+				tlv_len = make_tlv(&buf[ret+ssl_tlv_len], (buf_len-ret-ssl_tlv_len), PP2_TYPE_SSL_VERSION, strlen(value), value);
+				ssl_tlv_len += tlv_len;
+			}
+			if (ssl_sock_get_cert_used(remote)) {
+				tlv->client |= PP2_CLIENT_CERT;
+				tlv->verify = htonl(ssl_sock_get_verify_result(remote));
+			}
+			if (srv->pp_opts & SRV_PP_V2_SSL_CN) {
+				value = ssl_sock_get_common_name(remote);
+				if (value) {
+					tlv_len = make_tlv(&buf[ret+ssl_tlv_len], (buf_len - ret - ssl_tlv_len), PP2_TYPE_SSL_CN, strlen(value), value);
+					ssl_tlv_len += tlv_len;
+				}
+			}
+		}
+		tlv->tlv.length_hi = (uint16_t)(ssl_tlv_len - sizeof(struct tlv)) >> 8;
+		tlv->tlv.length_lo = (uint16_t)(ssl_tlv_len - sizeof(struct tlv)) & 0x00ff;
+		ret += ssl_tlv_len;
+	}
+#endif
 
-	/* The connection is ready now, simply return and let the connection
-	 * handler notify upper layers if needed.
-	 */
-	if (conn->flags & CO_FL_WAIT_L4_CONN)
-		conn->flags &= ~CO_FL_WAIT_L4_CONN;
-	conn->flags &= ~flag;
-	return 1;
+	hdr_p->len = htons((uint16_t)(ret - PP2_HEADER_LEN));
 
- out_error:
-	/* Write error on the file descriptor */
-	conn->flags |= CO_FL_ERROR;
-	return 0;
-
- out_wait:
-	__conn_sock_stop_recv(conn);
-	__conn_sock_poll_send(conn);
-	return 0;
+	return ret;
 }
