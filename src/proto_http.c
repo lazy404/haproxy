@@ -6817,7 +6817,10 @@ int apply_filter_to_req_headers(struct session *s, struct channel *req, struct h
 				break;
 
 			case ACT_REPLACE:
-				trash.len = exp_replace(trash.str, cur_ptr, exp->replace, pmatch);
+				trash.len = exp_replace(trash.str, trash.size, cur_ptr, exp->replace, pmatch);
+				if (trash.len < 0)
+					return -1;
+
 				delta = buffer_replace2(req->buf, cur_ptr, cur_end, trash.str, trash.len);
 				/* FIXME: if the user adds a newline in the replacement, the
 				 * index will not be recalculated for now, and the new line
@@ -6927,7 +6930,10 @@ int apply_filter_to_req_line(struct session *s, struct channel *req, struct hdr_
 
 		case ACT_REPLACE:
 			*cur_end = term; /* restore the string terminator */
-			trash.len = exp_replace(trash.str, cur_ptr, exp->replace, pmatch);
+			trash.len = exp_replace(trash.str, trash.size, cur_ptr, exp->replace, pmatch);
+			if (trash.len < 0)
+				return -1;
+
 			delta = buffer_replace2(req->buf, cur_ptr, cur_end, trash.str, trash.len);
 			/* FIXME: if the user adds a newline in the replacement, the
 			 * index will not be recalculated for now, and the new line
@@ -7069,12 +7075,12 @@ void manage_client_side_appsession(struct session *s, const char *buf, int len) 
 
 			while (srv) {
 				if (strcmp(srv->id, asession->serverid) == 0) {
-					if ((srv->state & SRV_RUNNING) ||
+					if ((srv->state != SRV_ST_STOPPED) ||
 					    (s->be->options & PR_O_PERSIST) ||
 					    (s->flags & SN_FORCE_PRST)) {
 						/* we found the server and it's usable */
 						txn->flags &= ~TX_CK_MASK;
-						txn->flags |= (srv->state & SRV_RUNNING) ? TX_CK_VALID : TX_CK_DOWN;
+						txn->flags |= (srv->state != SRV_ST_STOPPED) ? TX_CK_VALID : TX_CK_DOWN;
 						s->flags |= SN_DIRECT | SN_ASSIGNED;
 						s->target = &srv->obj_type;
 
@@ -7479,12 +7485,12 @@ void manage_client_side_cookies(struct session *s, struct channel *req)
 				while (srv) {
 					if (srv->cookie && (srv->cklen == delim - val_beg) &&
 					    !memcmp(val_beg, srv->cookie, delim - val_beg)) {
-						if ((srv->state & SRV_RUNNING) ||
+						if ((srv->state != SRV_ST_STOPPED) ||
 						    (s->be->options & PR_O_PERSIST) ||
 						    (s->flags & SN_FORCE_PRST)) {
 							/* we found the server and we can use it */
 							txn->flags &= ~TX_CK_MASK;
-							txn->flags |= (srv->state & SRV_RUNNING) ? TX_CK_VALID : TX_CK_DOWN;
+							txn->flags |= (srv->state != SRV_ST_STOPPED) ? TX_CK_VALID : TX_CK_DOWN;
 							s->flags |= SN_DIRECT | SN_ASSIGNED;
 							s->target = &srv->obj_type;
 							break;
@@ -7676,7 +7682,10 @@ int apply_filter_to_resp_headers(struct session *s, struct channel *rtr, struct 
 				break;
 
 			case ACT_REPLACE:
-				trash.len = exp_replace(trash.str, cur_ptr, exp->replace, pmatch);
+				trash.len = exp_replace(trash.str, trash.size, cur_ptr, exp->replace, pmatch);
+				if (trash.len < 0)
+					return -1;
+
 				delta = buffer_replace2(rtr->buf, cur_ptr, cur_end, trash.str, trash.len);
 				/* FIXME: if the user adds a newline in the replacement, the
 				 * index will not be recalculated for now, and the new line
@@ -7766,7 +7775,10 @@ int apply_filter_to_sts_line(struct session *s, struct channel *rtr, struct hdr_
 
 		case ACT_REPLACE:
 			*cur_end = term; /* restore the string terminator */
-			trash.len = exp_replace(trash.str, cur_ptr, exp->replace, pmatch);
+			trash.len = exp_replace(trash.str, trash.size, cur_ptr, exp->replace, pmatch);
+			if (trash.len < 0)
+				return -1;
+
 			delta = buffer_replace2(rtr->buf, cur_ptr, cur_end, trash.str, trash.len);
 			/* FIXME: if the user adds a newline in the replacement, the
 			 * index will not be recalculated for now, and the new line
@@ -7847,7 +7859,8 @@ int apply_filters_to_response(struct session *s, struct channel *rtr, struct pro
 			/* The filter did not match the response, it can be
 			 * iterated through all headers.
 			 */
-			apply_filter_to_resp_headers(s, rtr, exp);
+			if (unlikely(apply_filter_to_resp_headers(s, rtr, exp) < 0))
+				return -1;
 		}
 	}
 	return 0;
