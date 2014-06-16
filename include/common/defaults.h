@@ -244,4 +244,9 @@
 
 #define MANGLE_NUMBER(x) ( NUMBER_A(x) + NUMBER_B(x) )
 
+/* ssl max dh param size */
+#ifndef SSL_DEFAULT_DH_PARAM
+#define SSL_DEFAULT_DH_PARAM 0
+#endif
+
 #endif /* _COMMON_DEFAULTS_H */
