@@ -4,7 +4,7 @@
                          ----------------------
                               version 1.5
                              willy tarreau
-                              2014/05/28
+                              2014/06/19
 
 
 This document covers the configuration language as implemented in the version
@@ -739,7 +739,11 @@ maxconn <number>
   Sets the maximum per-process number of concurrent connections to <number>. It
   is equivalent to the command-line argument "-n". Proxies will stop accepting
   connections when this limit is reached. The "ulimit-n" parameter is
-  automatically adjusted according to this value. See also "ulimit-n".
+  automatically adjusted according to this value. See also "ulimit-n". Note:
+  the "select" poller cannot reliably use more than 1024 file descriptors on
+  some platforms. If your platform only supports select and reports "select
+  FAILED" on startup, you need to reduce maxconn until it works (slightly
+  below 500 in general).
 
 maxconnrate <number>
   Sets the maximum per-process number of connections per second to <number>.
@@ -2878,6 +2882,8 @@ http-check send-state
 http-request { allow | deny | tarpit | auth [realm <realm>] | redirect <rule> |
               add-header <name> <fmt> | set-header <name> <fmt> |
               del-header <name> | set-nice <nice> | set-log-level <level> |
+              replace-header <name> <match-regex> <replace-fmt> |
+              replace-value <name> <match-regex> <replace-fmt> |
               set-tos <tos> | set-mark <mark> |
               add-acl(<file name>) <key fmt> |
               del-acl(<file name>) <key fmt> |
@@ -2944,6 +2950,47 @@ http-request { allow | deny | tarpit | auth [realm <realm>] | redirect <rule> |
 
     - "del-header" removes all HTTP header fields whose name is specified in
       <name>.
+
+    - "replace-header" matches the regular expression in all occurrences of
+      header field <name> according to <match-regex>, and replaces them with
+      the <replace-fmt> argument. Format characters are allowed in replace-fmt
+      and work like in <fmt> arguments in "add-header". The match is only
+      case-sensitive. It is important to understand that this action only
+      considers whole header lines, regardless of the number of values they
+      may contain. This usage is suited to headers naturally containing commas
+      in their value, such as If-Modified-Since and so on.
+
+      Example:
+
+        http-request replace-header Cookie foo=([^;]*);(.*) foo=\1;ip=%bi;\2
+
+      applied to:
+
+        Cookie: foo=foobar; expires=Tue, 14-Jun-2016 01:40:45 GMT;
+
+      outputs:
+
+        Cookie: foo=foobar;ip=192.168.1.20; expires=Tue, 14-Jun-2016 01:40:45 GMT;
+
+      assuming the backend IP is 192.168.1.20
+
+    - "replace-value" works like "replace-header" except that it matches the
+      regex against every comma-delimited value of the header field <name>
+      instead of the entire header. This is suited for all headers which are
+      allowed to carry more than one value. An example could be the Accept
+      header.
+
+      Example:
+
+        http-request replace-value X-Forwarded-For ^192\.168\.(.*)$ 172.16.\1
+
+      applied to:
+
+        X-Forwarded-For: 192.168.10.1, 192.168.13.24, 10.0.0.37
+
+      outputs:
+
+        X-Forwarded-For: 172.16.10.1, 172.16.13.24, 10.0.0.37
 
     - "set-nice" sets the "nice" factor of the current request being processed.
       It only has effect against the other requests being processed at the same
@@ -3069,6 +3116,8 @@ http-request { allow | deny | tarpit | auth [realm <realm>] | redirect <rule> |
 
 http-response { allow | deny | add-header <name> <fmt> | set-nice <nice> |
                 set-header <name> <fmt> | del-header <name> |
+                replace-header <name> <regex-match> <replace-fmt> |
+                replace-value <name> <regex-match> <replace-fmt> |
                 set-log-level <level> | set-mark <mark> | set-tos <tos> |
                 add-acl(<file name>) <key fmt> |
                 del-acl(<file name>) <key fmt> |
@@ -3112,6 +3161,47 @@ http-response { allow | deny | add-header <name> <fmt> | set-nice <nice> |
 
     - "del-header" removes all HTTP header fields whose name is specified in
       <name>.
+
+    - "replace-header" matches the regular expression in all occurrences of
+      header field <name> according to <match-regex>, and replaces them with
+      the <replace-fmt> argument. Format characters are allowed in replace-fmt
+      and work like in <fmt> arguments in "add-header". The match is only
+      case-sensitive. It is important to understand that this action only
+      considers whole header lines, regardless of the number of values they
+      may contain. This usage is suited to headers naturally containing commas
+      in their value, such as Set-Cookie, Expires and so on.
+
+      Example:
+
+        http-response replace-header Set-Cookie (C=[^;]*);(.*) \1;ip=%bi;\2
+
+      applied to:
+
+        Set-Cookie: C=1; expires=Tue, 14-Jun-2016 01:40:45 GMT
+
+      outputs:
+
+        Set-Cookie: C=1;ip=192.168.1.20; expires=Tue, 14-Jun-2016 01:40:45 GMT
+
+      assuming the backend IP is 192.168.1.20.
+
+    - "replace-value" works like "replace-header" except that it matches the
+      regex against every comma-delimited value of the header field <name>
+      instead of the entire header. This is suited for all headers which are
+      allowed to carry more than one value. An example could be the Accept
+      header.
+
+      Example:
+
+        http-response replace-value Cache-control ^public$ private
+
+      applied to:
+
+        Cache-Control: max-age=3600, public
+
+      outputs:
+
+        Cache-Control: max-age=3600, private
 
     - "set-nice" sets the "nice" factor of the current request being processed.
       It only has effect against the other requests being processed at the same
@@ -8178,7 +8268,8 @@ crt <cert>
   are loaded.
 
   If a directory name is used instead of a PEM file, then all files found in
-  that directory will be loaded. This directive may be specified multiple times
+  that directory will be loaded unless their name ends with '.issuer' or
+  '.ocsp' (reserved extensions). This directive may be specified multiple times
   in order to load certificates from multiple files or directories. The
   certificates will be presented to clients who provide a valid TLS Server Name
   Indication field matching one of their CN or alt subjects. Wildcards are
@@ -8200,6 +8291,20 @@ crt <cert>
   Godaddy, selection Apache Tomcat will get the correct bundle, but many
   others, e.g. nginx, result in a wrong bundle that will not work for some
   clients).
+
+  For each PEM file, haproxy checks for the presence of file at the same path
+  suffixed by ".ocsp". If such file is found, support for the TLS Certificate
+  Status Request extension (also known as "OCSP stapling") is automatically
+  enabled. The content of this file is optional. If not empty, it must contain
+  a valid OCSP Response in DER format. In order to be valid an OCSP Response
+  must comply with the following rules: it has to indicate a good status,
+  it has to be a single response for the certificate of the PEM file, and it
+  has to be valid at the moment of addition. If these rules are not respected
+  the OCSP Response is ignored and a warning is emitted. In order to  identify
+  which certificate an OCSP Response applies to, the issuer's certificate is
+  necessary. If the issuer's certificate is not found in the PEM file, it will
+  be loaded from a file at the same path as the PEM file suffixed by ".issuer"
+  if it exists otherwise it will fail with an error.
 
 crt-ignore-err <errors>
   This setting is only available when support for OpenSSL was built in. Sets a
@@ -12926,7 +13031,15 @@ Unix socket.
 ---------------
 
 The statistics may be consulted either from the unix socket or from the HTTP
-page. Both means provide a CSV format whose fields follow.
+page. Both means provide a CSV format whose fields follow. The first line
+begins with a sharp ('#') and has one word per comma-delimited field which
+represents the title of the column. All other lines starting at the second one
+use a classical CSV format using a comma as the delimiter, and the double quote
+('"') as an optional text delimiter, but only if the enclosed text is ambiguous
+(if it contains a quote or a comma). The double-quote character ('"') in the
+text is doubled ('""'), which is the format that most tools recognize. Please
+do not insert any column before these ones in order not to break tools which
+use hard-coded column positions.
 
   0. pxname: proxy name
   1. svname: service name (FRONTEND for frontend, BACKEND for backend, any name
@@ -13001,6 +13114,12 @@ page. Both means provide a CSV format whose fields follow.
  53. comp_byp: number of bytes that bypassed the HTTP compressor (CPU/BW limit)
  54. comp_rsp: number of HTTP responses that were compressed
  55. lastsess: number of seconds since last session assigned to server/backend
+ 56. last_chk: last health check contents or textual error
+ 57. last_agt: last agent check contents or textual error
+ 58. qtime: the average queue time in ms over the 1024 last requests
+ 59. ctime: the average connect time in ms over the 1024 last requests
+ 60. rtime: the average response time in ms over the 1024 last requests (0 for TCP)
+ 61. ttime: the average total session time in ms over the 1024 last requests
 
 
 9.2. Unix Socket commands
@@ -13413,6 +13532,18 @@ set server <backend>/<server> state [ ready | drain | maint ]
 set server <backend>/<server> weight <weight>[%]
   Change a server's weight to the value passed in argument. This is the exact
   equivalent of the "set weight" command below.
+
+set ssl ocsp-response <response>
+  This command is used to update an OCSP Response for a certificate (see "crt"
+  on "bind" lines). Same controls are performed as during the initial loading of
+  the response. The <response> must be passed as a base64 encoded string of the
+  DER encoded response from the OCSP server.
+
+  Example:
+    openssl ocsp -issuer issuer.pem -cert server.pem \
+                 -host ocsp.issuer.com:80 -respout resp.der
+    echo "set ssl ocsp-response $(base64 -w 10000 resp.der)" | \
+                 socat stdio /var/run/haproxy.stat
 
 set table <table> key <key> [data.<data_type> <value>]*
   Create or update a stick-table entry in the table. If the key is not present,

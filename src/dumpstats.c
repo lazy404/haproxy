@@ -35,6 +35,7 @@
 #include <common/time.h>
 #include <common/uri_auth.h>
 #include <common/version.h>
+#include <common/base64.h>
 
 #include <types/global.h>
 
@@ -195,6 +196,7 @@ static const char stats_sock_usage_msg[] =
 	"  add map        : add map entry\n"
 	"  del map        : delete map entry\n"
 	"  clear map <id> : clear the content of this map\n"
+	"  set ssl <stmt> : set statement for ssl\n"
 	"";
 
 static const char stats_permission_denied_msg[] =
@@ -489,7 +491,7 @@ static void stats_dump_csv_header()
 	              "hrsp_1xx,hrsp_2xx,hrsp_3xx,hrsp_4xx,hrsp_5xx,hrsp_other,hanafail,"
 	              "req_rate,req_rate_max,req_tot,"
 	              "cli_abrt,srv_abrt,"
-	              "comp_in,comp_out,comp_byp,comp_rsp,lastsess,"
+	              "comp_in,comp_out,comp_byp,comp_rsp,lastsess,last_chk,last_agt,qtime,ctime,rtime,ttime,"
 	              "\n");
 }
 
@@ -1789,6 +1791,50 @@ static int stats_sock_parse_request(struct stream_interface *si, char *line)
 			appctx->st0 = STAT_CLI_PRINT;
 			return 1;
 		}
+#ifdef USE_OPENSSL
+		else if (strcmp(args[1], "ssl") == 0) {
+			if (strcmp(args[2], "ocsp-response") == 0) {
+#ifdef SSL_CTRL_SET_TLSEXT_STATUS_REQ_CB
+				char *err = NULL;
+
+				/* Expect one parameter: the new response in base64 encoding */
+				if (!*args[3]) {
+					appctx->ctx.cli.msg = "'set ssl ocsp-response' expects response in base64 encoding.\n";
+					appctx->st0 = STAT_CLI_PRINT;
+					return 1;
+				}
+
+				trash.len = base64dec(args[3], strlen(args[3]), trash.str, trash.size);
+				if (trash.len < 0) {
+					appctx->ctx.cli.msg = "'set ssl ocsp-response' received invalid base64 encoded response.\n";
+					appctx->st0 = STAT_CLI_PRINT;
+					return 1;
+				}
+
+				if (ssl_sock_update_ocsp_response(&trash, &err)) {
+					if (err) {
+						memprintf(&err, "%s.\n", err);
+						appctx->ctx.cli.err = err;
+						appctx->st0 = STAT_CLI_PRINT_FREE;
+					}
+					return 1;
+				}
+				appctx->ctx.cli.msg = "OCSP Response updated!";
+				appctx->st0 = STAT_CLI_PRINT;
+				return 1;
+#else
+				appctx->ctx.cli.msg = "HAProxy was compiled against a version of OpenSSL that doesn't support OCSP stapling.\n";
+				appctx->st0 = STAT_CLI_PRINT;
+				return 1;
+#endif
+			}
+			else {
+				appctx->ctx.cli.msg = "'set ssl' only supports 'ocsp-response'.\n";
+				appctx->st0 = STAT_CLI_PRINT;
+				return 1;
+			}
+		}
+#endif
 		else { /* unknown "set" parameter */
 			return 0;
 		}
@@ -2743,8 +2789,8 @@ static int stats_dump_fe_stats(struct stream_interface *si, struct proxy *px)
 		chunk_appendf(&trash, "%lld,",
 		              px->fe_counters.p.http.comp_rsp);
 
-		/* lastsess */
-		chunk_appendf(&trash, ",");
+		/* lastsess, last_chk, last_agt, qtime, ctime, rtime, ttime, */
+		chunk_appendf(&trash, ",,,,,,,");
 
 		/* finish with EOL */
 		chunk_appendf(&trash, "\n");
@@ -2867,8 +2913,8 @@ static int stats_dump_li_stats(struct stream_interface *si, struct proxy *px, st
 		              ",,"
 		              /* compression: in, out, bypassed, comp_rsp */
 		              ",,,,"
-			      /* lastsess */
-			      ","
+			      /* lastsess, last_chk, last_agt, qtime, ctime, rtime, ttime, */
+			      ",,,,,,,"
 		              "\n",
 		              px->id, l->name,
 		              l->nbconn, l->counters->conn_max,
@@ -3019,6 +3065,13 @@ static int stats_dump_sv_stats(struct stream_interface *si, struct proxy *px, in
 			              U2H(sv->counters.p.http.rsp[5]), tot ? (int)(100*sv->counters.p.http.rsp[5] / tot) : 0,
 			              U2H(sv->counters.p.http.rsp[0]), tot ? (int)(100*sv->counters.p.http.rsp[0] / tot) : 0);
 		}
+
+		chunk_appendf(&trash, "<tr><th colspan=3>Avg over last 1024 success. conn.</th></tr>");
+		chunk_appendf(&trash, "<tr><th>- Queue time:</th><td>%s</td><td>ms</td></tr>",   U2H(swrate_avg(sv->counters.q_time, TIME_STATS_SAMPLES)));
+		chunk_appendf(&trash, "<tr><th>- Connect time:</th><td>%s</td><td>ms</td></tr>", U2H(swrate_avg(sv->counters.c_time, TIME_STATS_SAMPLES)));
+		if (px->mode == PR_MODE_HTTP)
+			chunk_appendf(&trash, "<tr><th>- Response time:</th><td>%s</td><td>ms</td></tr>", U2H(swrate_avg(sv->counters.d_time, TIME_STATS_SAMPLES)));
+		chunk_appendf(&trash, "<tr><th>- Total time:</th><td>%s</td><td>ms</td></tr>",   U2H(swrate_avg(sv->counters.t_time, TIME_STATS_SAMPLES)));
 
 		chunk_appendf(&trash,
 		              "</table></div></u></td>"
@@ -3293,6 +3346,17 @@ static int stats_dump_sv_stats(struct stream_interface *si, struct proxy *px, in
 		/* lastsess */
 		chunk_appendf(&trash, "%d,", srv_lastsession(sv));
 
+		/* capture of last check and agent statuses */
+		chunk_appendf(&trash, "%s,", ((sv->check.state & (CHK_ST_ENABLED|CHK_ST_PAUSED)) == CHK_ST_ENABLED) ? cstr(sv->check.desc) : "");
+		chunk_appendf(&trash, "%s,", ((sv->agent.state & (CHK_ST_ENABLED|CHK_ST_PAUSED)) == CHK_ST_ENABLED) ? cstr(sv->agent.desc) : "");
+
+		/* qtime, ctime, rtime, ttime, */
+		chunk_appendf(&trash, "%u,%u,%u,%u,",
+		              swrate_avg(sv->counters.q_time, TIME_STATS_SAMPLES),
+		              swrate_avg(sv->counters.c_time, TIME_STATS_SAMPLES),
+		              swrate_avg(sv->counters.d_time, TIME_STATS_SAMPLES),
+		              swrate_avg(sv->counters.t_time, TIME_STATS_SAMPLES));
+
 		/* finish with EOL */
 		chunk_appendf(&trash, "\n");
 	}
@@ -3378,6 +3442,7 @@ static int stats_dump_be_stats(struct stream_interface *si, struct proxy *px, in
 			              "<tr><th>- HTTP 5xx responses:</th><td>%s</td></tr>"
 			              "<tr><th>- other responses:</th><td>%s</td></tr>"
 			              "<tr><th>Intercepted requests:</th><td>%s</td></tr>"
+				      "<tr><th colspan=3>Avg over last 1024 success. conn.</th></tr>"
 			              "",
 			              U2H(px->be_counters.p.http.cum_req),
 			              U2H(px->be_counters.p.http.rsp[1]),
@@ -3391,6 +3456,12 @@ static int stats_dump_be_stats(struct stream_interface *si, struct proxy *px, in
 			              U2H(px->be_counters.p.http.rsp[0]),
 			              U2H(px->be_counters.intercepted_req));
 		}
+
+		chunk_appendf(&trash, "<tr><th>- Queue time:</th><td>%s</td><td>ms</td></tr>",   U2H(swrate_avg(px->be_counters.q_time, TIME_STATS_SAMPLES)));
+		chunk_appendf(&trash, "<tr><th>- Connect time:</th><td>%s</td><td>ms</td></tr>", U2H(swrate_avg(px->be_counters.c_time, TIME_STATS_SAMPLES)));
+		if (px->mode == PR_MODE_HTTP)
+			chunk_appendf(&trash, "<tr><th>- Response time:</th><td>%s</td><td>ms</td></tr>", U2H(swrate_avg(px->be_counters.d_time, TIME_STATS_SAMPLES)));
+		chunk_appendf(&trash, "<tr><th>- Total time:</th><td>%s</td><td>ms</td></tr>",   U2H(swrate_avg(px->be_counters.t_time, TIME_STATS_SAMPLES)));
 
 		chunk_appendf(&trash,
 		              "</table></div></u></td>"
@@ -3523,8 +3594,15 @@ static int stats_dump_be_stats(struct stream_interface *si, struct proxy *px, in
 		/* compression: comp_rsp */
 		chunk_appendf(&trash, "%lld,", px->be_counters.p.http.comp_rsp);
 
-		/* lastsess */
-		chunk_appendf(&trash, "%d,", be_lastsession(px));
+		/* lastsess, last_chk, last_agt, */
+		chunk_appendf(&trash, "%d,,,", be_lastsession(px));
+
+		/* qtime, ctime, rtime, ttime, */
+		chunk_appendf(&trash, "%u,%u,%u,%u,",
+		              swrate_avg(px->be_counters.q_time, TIME_STATS_SAMPLES),
+		              swrate_avg(px->be_counters.c_time, TIME_STATS_SAMPLES),
+		              swrate_avg(px->be_counters.d_time, TIME_STATS_SAMPLES),
+		              swrate_avg(px->be_counters.t_time, TIME_STATS_SAMPLES));
 
 		/* finish with EOL */
 		chunk_appendf(&trash, "\n");

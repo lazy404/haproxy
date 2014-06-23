@@ -1034,8 +1034,8 @@ void deinit(void)
 
 		for (exp = p->req_exp; exp != NULL; ) {
 			if (exp->preg) {
-				regfree((regex_t *)exp->preg);
-				free((regex_t *)exp->preg);
+				regex_free(exp->preg);
+				free(exp->preg);
 			}
 
 			if (exp->replace && exp->action != ACT_SETBE)
@@ -1047,8 +1047,8 @@ void deinit(void)
 
 		for (exp = p->rsp_exp; exp != NULL; ) {
 			if (exp->preg) {
-				regfree((regex_t *)exp->preg);
-				free((regex_t *)exp->preg);
+				regex_free(exp->preg);
+				free(exp->preg);
 			}
 
 			if (exp->replace && exp->action != ACT_SETBE)
@@ -1203,6 +1203,7 @@ void deinit(void)
 		free(p->fwdfor_hdr_name);
 
 		free_http_req_rules(&p->http_req_rules);
+		free_http_res_rules(&p->http_res_rules);
 		free(p->task);
 
 		pool_destroy2(p->req_cap_pool);
