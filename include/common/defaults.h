@@ -249,4 +249,23 @@
 #define SSL_DEFAULT_DH_PARAM 0
 #endif
 
+/* Number of samples used to compute the times reported in stats. A power of
+ * two is highly recommended, and this value multiplied by the largest response
+ * time must not overflow and unsigned int. See freq_ctr.h for more information.
+ * We consider that values are accurate to 95% with two batches of samples below,
+ * so in order to advertise accurate times across 1k samples, we effectively
+ * measure over 512.
+ */
+#ifndef TIME_STATS_SAMPLES
+#define TIME_STATS_SAMPLES 512
+#endif
+
+/* max ocsp cert id asn1 encoded length */
+#ifndef OCSP_MAX_CERTID_ASN1_LENGTH
+#define OCSP_MAX_CERTID_ASN1_LENGTH 128
+#endif
+
+#ifndef OCSP_MAX_RESPONSE_TIME_SKEW
+#define OCSP_MAX_RESPONSE_TIME_SKEW 300
+#endif
 #endif /* _COMMON_DEFAULTS_H */

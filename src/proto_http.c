@@ -3242,6 +3242,118 @@ static inline void inet_set_tos(int fd, struct sockaddr_storage from, int tos)
 #endif
 }
 
+/* Returns the number of characters written to destination,
+ * -1 on internal error and -2 if no replacement took place.
+ */
+static int http_replace_header(struct my_regex *re, char *dst, uint dst_size, char *val, int len,
+                               const char *rep_str)
+{
+	if (!regex_exec_match2(re, val, len, MAX_MATCH, pmatch))
+		return -2;
+
+	return exp_replace(dst, dst_size, val, rep_str, pmatch);
+}
+
+/* Returns the number of characters written to destination,
+ * -1 on internal error and -2 if no replacement took place.
+ */
+static int http_replace_value(struct my_regex *re, char *dst, uint dst_size, char *val, int len, char delim,
+                              const char *rep_str)
+{
+	char* p = val;
+	char* dst_end = dst + dst_size;
+	char* dst_p = dst;
+
+	for (;;) {
+		char *p_delim;
+
+		/* look for delim. */
+		p_delim = p;
+		while (p_delim < p + len && *p_delim != delim)
+			p_delim++;
+
+		if (regex_exec_match2(re, p, p_delim-p, MAX_MATCH, pmatch)) {
+			int replace_n = exp_replace(dst_p, dst_end - dst_p, p, rep_str, pmatch);
+
+			if (replace_n < 0)
+				return -1;
+
+			dst_p += replace_n;
+		} else {
+			uint len = p_delim - p;
+
+			if (dst_p + len >= dst_end)
+				return -1;
+
+			memcpy(dst_p, p, len);
+			dst_p += len;
+		}
+
+		if (dst_p >= dst_end)
+			return -1;
+
+		/* end of the replacements. */
+		if (p_delim >= p + len)
+			break;
+
+		/* Next part. */
+		*dst_p++ = delim;
+		p = p_delim + 1;
+	}
+
+	return dst_p - dst;
+}
+
+static int http_transform_header(struct session* s, struct http_msg *msg, const char* name, uint name_len,
+                                 char* buf, struct hdr_idx* idx, struct list *fmt, struct my_regex *re,
+                                 struct hdr_ctx* ctx, int action)
+{
+	ctx->idx = 0;
+
+	while (http_find_full_header2(name, name_len, buf, idx, ctx)) {
+		struct hdr_idx_elem *hdr = idx->v + ctx->idx;
+		int delta;
+		char* val = (char*)ctx->line + name_len + 2;
+		char* val_end = (char*)ctx->line + hdr->len;
+		char* reg_dst_buf;
+		uint reg_dst_buf_size;
+		int n_replaced;
+
+		trash.len = build_logline(s, trash.str, trash.size, fmt);
+
+		if (trash.len >= trash.size - 1)
+			return -1;
+
+		reg_dst_buf = trash.str + trash.len + 1;
+		reg_dst_buf_size = trash.size - trash.len - 1;
+
+		switch (action) {
+		case HTTP_REQ_ACT_REPLACE_VAL:
+		case HTTP_RES_ACT_REPLACE_VAL:
+			n_replaced = http_replace_value(re, reg_dst_buf, reg_dst_buf_size, val, val_end-val, ',', trash.str);
+			break;
+		case HTTP_REQ_ACT_REPLACE_HDR:
+		case HTTP_RES_ACT_REPLACE_HDR:
+			n_replaced = http_replace_header(re, reg_dst_buf, reg_dst_buf_size, val, val_end-val, trash.str);
+			break;
+		default: /* impossible */
+			return -1;
+		}
+
+		switch (n_replaced) {
+		case -1: return -1;
+		case -2: continue;
+		}
+
+		delta = buffer_replace2(msg->chn->buf, val, val_end, reg_dst_buf, n_replaced);
+
+		hdr->len += delta;
+		http_msg_move_end(msg, delta);
+	}
+
+	return 0;
+}
+
 /* Executes the http-request rules <rules> for session <s>, proxy <px> and
  * transaction <txn>. Returns the verdict of the first rule that prevents
  * further processing of the request (auth, deny, ...), and defaults to
@@ -3338,6 +3450,14 @@ http_req_get_intercept_rule(struct proxy *px, struct list *rules, struct session
 
 		case HTTP_REQ_ACT_SET_LOGL:
 			s->logs.level = rule->arg.loglevel;
+			break;
+
+		case HTTP_REQ_ACT_REPLACE_HDR:
+		case HTTP_REQ_ACT_REPLACE_VAL:
+			if (http_transform_header(s, &txn->req, rule->arg.hdr_add.name, rule->arg.hdr_add.name_len,
+			                          txn->req.chn->buf->p, &txn->hdr_idx, &rule->arg.hdr_add.fmt,
+			                          &rule->arg.hdr_add.re, &ctx, rule->action))
+				return HTTP_RULE_RES_BADREQ;
 			break;
 
 		case HTTP_REQ_ACT_DEL_HDR:
@@ -3519,6 +3639,14 @@ http_res_get_intercept_rule(struct proxy *px, struct list *rules, struct session
 
 		case HTTP_RES_ACT_SET_LOGL:
 			s->logs.level = rule->arg.loglevel;
+			break;
+
+		case HTTP_RES_ACT_REPLACE_HDR:
+		case HTTP_RES_ACT_REPLACE_VAL:
+			if (http_transform_header(s, &txn->rsp, rule->arg.hdr_add.name, rule->arg.hdr_add.name_len,
+			                          txn->rsp.chn->buf->p, &txn->hdr_idx, &rule->arg.hdr_add.fmt,
+			                          &rule->arg.hdr_add.re, &ctx, rule->action))
+				return NULL; /* note: we should report an error here */
 			break;
 
 		case HTTP_RES_ACT_DEL_HDR:
@@ -4788,6 +4916,8 @@ void http_end_txn_clean_session(struct session *s)
 	    (!(s->fe->options & PR_O_NULLNOLOG) || s->req->total)) {
 		s->do_log(s);
 	}
+
+	session_update_time_stats(s);
 
 	s->logs.accept_date = date; /* user-visible date for logging */
 	s->logs.tv_accept = now;  /* corrected date for internal use */
@@ -6819,7 +6949,6 @@ int http_response_forward_body(struct session *s, struct channel *res, int an_bi
  */
 int apply_filter_to_req_headers(struct session *s, struct channel *req, struct hdr_exp *exp)
 {
-	char term;
 	char *cur_ptr, *cur_end, *cur_next;
 	int cur_idx, old_idx, last_hdr;
 	struct http_txn *txn = &s->txn;
@@ -6853,15 +6982,7 @@ int apply_filter_to_req_headers(struct session *s, struct channel *req, struct h
 		 * and the next header starts at cur_next.
 		 */
 
-		/* The annoying part is that pattern matching needs
-		 * that we modify the contents to null-terminate all
-		 * strings before testing them.
-		 */
-
-		term = *cur_end;
-		*cur_end = '\0';
-
-		if (regexec(exp->preg, cur_ptr, MAX_MATCH, pmatch, 0) == 0) {
+		if (regex_exec_match2(exp->preg, cur_ptr, cur_end-cur_ptr, MAX_MATCH, pmatch)) {
 			switch (exp->action) {
 			case ACT_SETBE:
 				/* It is not possible to jump a second time.
@@ -6922,8 +7043,6 @@ int apply_filter_to_req_headers(struct session *s, struct channel *req, struct h
 
 			}
 		}
-		if (cur_end)
-			*cur_end = term; /* restore the string terminator */
 
 		/* keep the link from this header to next one in case of later
 		 * removal of next header.
@@ -6942,7 +7061,6 @@ int apply_filter_to_req_headers(struct session *s, struct channel *req, struct h
  */
 int apply_filter_to_req_line(struct session *s, struct channel *req, struct hdr_exp *exp)
 {
-	char term;
 	char *cur_ptr, *cur_end;
 	int done;
 	struct http_txn *txn = &s->txn;
@@ -6965,15 +7083,7 @@ int apply_filter_to_req_line(struct session *s, struct channel *req, struct hdr_
 
 	/* Now we have the request line between cur_ptr and cur_end */
 
-	/* The annoying part is that pattern matching needs
-	 * that we modify the contents to null-terminate all
-	 * strings before testing them.
-	 */
-
-	term = *cur_end;
-	*cur_end = '\0';
-
-	if (regexec(exp->preg, cur_ptr, MAX_MATCH, pmatch, 0) == 0) {
+	if (regex_exec_match2(exp->preg, cur_ptr, cur_end-cur_ptr, MAX_MATCH, pmatch)) {
 		switch (exp->action) {
 		case ACT_SETBE:
 			/* It is not possible to jump a second time.
@@ -7004,7 +7114,6 @@ int apply_filter_to_req_line(struct session *s, struct channel *req, struct hdr_
 			break;
 
 		case ACT_REPLACE:
-			*cur_end = term; /* restore the string terminator */
 			trash.len = exp_replace(trash.str, trash.size, cur_ptr, exp->replace, pmatch);
 			if (trash.len < 0)
 				return -1;
@@ -7033,7 +7142,6 @@ int apply_filter_to_req_line(struct session *s, struct channel *req, struct hdr_
 			return 1;
 		}
 	}
-	*cur_end = term; /* restore the string terminator */
 	return done;
 }
 
@@ -7703,7 +7811,6 @@ void manage_client_side_cookies(struct session *s, struct channel *req)
  */
 int apply_filter_to_resp_headers(struct session *s, struct channel *rtr, struct hdr_exp *exp)
 {
-	char term;
 	char *cur_ptr, *cur_end, *cur_next;
 	int cur_idx, old_idx, last_hdr;
 	struct http_txn *txn = &s->txn;
@@ -7736,15 +7843,7 @@ int apply_filter_to_resp_headers(struct session *s, struct channel *rtr, struct 
 		 * and the next header starts at cur_next.
 		 */
 
-		/* The annoying part is that pattern matching needs
-		 * that we modify the contents to null-terminate all
-		 * strings before testing them.
-		 */
-
-		term = *cur_end;
-		*cur_end = '\0';
-
-		if (regexec(exp->preg, cur_ptr, MAX_MATCH, pmatch, 0) == 0) {
+		if (regex_exec_match2(exp->preg, cur_ptr, cur_end-cur_ptr, MAX_MATCH, pmatch)) {
 			switch (exp->action) {
 			case ACT_ALLOW:
 				txn->flags |= TX_SVALLOW;
@@ -7787,8 +7886,6 @@ int apply_filter_to_resp_headers(struct session *s, struct channel *rtr, struct 
 
 			}
 		}
-		if (cur_end)
-			*cur_end = term; /* restore the string terminator */
 
 		/* keep the link from this header to next one in case of later
 		 * removal of next header.
@@ -7805,7 +7902,6 @@ int apply_filter_to_resp_headers(struct session *s, struct channel *rtr, struct 
  */
 int apply_filter_to_sts_line(struct session *s, struct channel *rtr, struct hdr_exp *exp)
 {
-	char term;
 	char *cur_ptr, *cur_end;
 	int done;
 	struct http_txn *txn = &s->txn;
@@ -7828,15 +7924,7 @@ int apply_filter_to_sts_line(struct session *s, struct channel *rtr, struct hdr_
 
 	/* Now we have the status line between cur_ptr and cur_end */
 
-	/* The annoying part is that pattern matching needs
-	 * that we modify the contents to null-terminate all
-	 * strings before testing them.
-	 */
-
-	term = *cur_end;
-	*cur_end = '\0';
-
-	if (regexec(exp->preg, cur_ptr, MAX_MATCH, pmatch, 0) == 0) {
+	if (regex_exec_match2(exp->preg, cur_ptr, cur_end-cur_ptr, MAX_MATCH, pmatch)) {
 		switch (exp->action) {
 		case ACT_ALLOW:
 			txn->flags |= TX_SVALLOW;
@@ -7849,7 +7937,6 @@ int apply_filter_to_sts_line(struct session *s, struct channel *rtr, struct hdr_
 			break;
 
 		case ACT_REPLACE:
-			*cur_end = term; /* restore the string terminator */
 			trash.len = exp_replace(trash.str, trash.size, cur_ptr, exp->replace, pmatch);
 			if (trash.len < 0)
 				return -1;
@@ -7878,7 +7965,6 @@ int apply_filter_to_sts_line(struct session *s, struct channel *rtr, struct hdr_
 			return 1;
 		}
 	}
-	*cur_end = term; /* restore the string terminator */
 	return done;
 }
 
@@ -8832,7 +8918,19 @@ void http_reset_txn(struct session *s)
 	s->rep->analyse_exp = TICK_ETERNITY;
 }
 
-void free_http_req_rules(struct list *r) {
+void free_http_res_rules(struct list *r)
+{
+	struct http_res_rule *tr, *pr;
+
+	list_for_each_entry_safe(pr, tr, r, list) {
+		LIST_DEL(&pr->list);
+		regex_free(&pr->arg.hdr_add.re);
+		free(pr);
+	}
+}
+
+void free_http_req_rules(struct list *r)
+{
 	struct http_req_rule *tr, *pr;
 
 	list_for_each_entry_safe(pr, tr, r, list) {
@@ -8840,6 +8938,7 @@ void free_http_req_rules(struct list *r) {
 		if (pr->action == HTTP_REQ_ACT_AUTH)
 			free(pr->arg.auth.realm);
 
+		regex_free(&pr->arg.hdr_add.re);
 		free(pr);
 	}
 }
@@ -8850,6 +8949,7 @@ struct http_req_rule *parse_http_req_cond(const char **args, const char *file, i
 	struct http_req_rule *rule;
 	struct http_req_action_kw *custom = NULL;
 	int cur_arg;
+	char *error;
 
 	rule = (struct http_req_rule*)calloc(1, sizeof(struct http_req_rule));
 	if (!rule) {
@@ -8995,6 +9095,38 @@ struct http_req_rule *parse_http_req_cond(const char **args, const char *file, i
 		proxy->conf.lfs_file = strdup(proxy->conf.args.file);
 		proxy->conf.lfs_line = proxy->conf.args.line;
 		cur_arg += 2;
+	} else if (strcmp(args[0], "replace-header") == 0 || strcmp(args[0], "replace-value") == 0) {
+		rule->action = args[0][8] == 'h' ? HTTP_REQ_ACT_REPLACE_HDR : HTTP_REQ_ACT_REPLACE_VAL;
+		cur_arg = 1;
+
+		if (!*args[cur_arg] || !*args[cur_arg+1] || !*args[cur_arg+2] ||
+		    (*args[cur_arg+3] && strcmp(args[cur_arg+2], "if") != 0 && strcmp(args[cur_arg+2], "unless") != 0)) {
+			Alert("parsing [%s:%d]: 'http-request %s' expects exactly 3 arguments.\n",
+			      file, linenum, args[0]);
+			goto out_err;
+		}
+
+		rule->arg.hdr_add.name = strdup(args[cur_arg]);
+		rule->arg.hdr_add.name_len = strlen(rule->arg.hdr_add.name);
+		LIST_INIT(&rule->arg.hdr_add.fmt);
+
+		error = NULL;
+		if (!regex_comp(args[cur_arg + 1], &rule->arg.hdr_add.re, 1, 1, &error)) {
+			Alert("parsing [%s:%d] : '%s' : %s.\n", file, linenum,
+			      args[cur_arg + 1], error);
+			free(error);
+			goto out_err;
+		}
+
+		proxy->conf.args.ctx = ARGC_HRQ;
+		parse_logformat_string(args[cur_arg + 2], proxy, &rule->arg.hdr_add.fmt, LOG_OPT_HTTP,
+				       (proxy->cap & PR_CAP_FE) ? SMP_VAL_FE_HRQ_HDR : SMP_VAL_BE_HRQ_HDR,
+				       file, linenum);
+
+		free(proxy->conf.lfs_file);
+		proxy->conf.lfs_file = strdup(proxy->conf.args.file);
+		proxy->conf.lfs_line = proxy->conf.args.line;
+		cur_arg += 3;
 	} else if (strcmp(args[0], "del-header") == 0) {
 		rule->action = HTTP_REQ_ACT_DEL_HDR;
 		cur_arg = 1;
@@ -9161,7 +9293,7 @@ struct http_req_rule *parse_http_req_cond(const char **args, const char *file, i
 			goto out_err;
 		}
 	} else {
-		Alert("parsing [%s:%d]: 'http-request' expects 'allow', 'deny', 'auth', 'redirect', 'tarpit', 'add-header', 'set-header', 'set-nice', 'set-tos', 'set-mark', 'set-log-level', 'add-acl', 'del-acl', 'del-map', 'set-map', but got '%s'%s.\n",
+		Alert("parsing [%s:%d]: 'http-request' expects 'allow', 'deny', 'auth', 'redirect', 'tarpit', 'add-header', 'set-header', 'replace-header', 'replace-value', 'set-nice', 'set-tos', 'set-mark', 'set-log-level', 'add-acl', 'del-acl', 'del-map', 'set-map', but got '%s'%s.\n",
 		      file, linenum, args[0], *args[0] ? "" : " (missing argument)");
 		goto out_err;
 	}
@@ -9197,6 +9329,7 @@ struct http_res_rule *parse_http_res_cond(const char **args, const char *file, i
 	struct http_res_rule *rule;
 	struct http_res_action_kw *custom = NULL;
 	int cur_arg;
+	char *error;
 
 	rule = calloc(1, sizeof(*rule));
 	if (!rule) {
@@ -9314,6 +9447,38 @@ struct http_res_rule *parse_http_res_cond(const char **args, const char *file, i
 		proxy->conf.lfs_file = strdup(proxy->conf.args.file);
 		proxy->conf.lfs_line = proxy->conf.args.line;
 		cur_arg += 2;
+	} else if (strcmp(args[0], "replace-header") == 0 || strcmp(args[0], "replace-value") == 0) {
+		rule->action = args[0][8] == 'h' ? HTTP_RES_ACT_REPLACE_HDR : HTTP_RES_ACT_REPLACE_VAL;
+		cur_arg = 1;
+
+		if (!*args[cur_arg] || !*args[cur_arg+1] || !*args[cur_arg+2] ||
+		    (*args[cur_arg+3] && strcmp(args[cur_arg+2], "if") != 0 && strcmp(args[cur_arg+2], "unless") != 0)) {
+			Alert("parsing [%s:%d]: 'http-request %s' expects exactly 3 arguments.\n",
+			      file, linenum, args[0]);
+			goto out_err;
+		}
+
+		rule->arg.hdr_add.name = strdup(args[cur_arg]);
+		rule->arg.hdr_add.name_len = strlen(rule->arg.hdr_add.name);
+		LIST_INIT(&rule->arg.hdr_add.fmt);
+
+		error = NULL;
+		if (!regex_comp(args[cur_arg + 1], &rule->arg.hdr_add.re, 1, 1, &error)) {
+			Alert("parsing [%s:%d] : '%s' : %s.\n", file, linenum,
+			      args[cur_arg + 1], error);
+			free(error);
+			goto out_err;
+		}
+
+		proxy->conf.args.ctx = ARGC_HRQ;
+		parse_logformat_string(args[cur_arg + 2], proxy, &rule->arg.hdr_add.fmt, LOG_OPT_HTTP,
+				       (proxy->cap & PR_CAP_BE) ? SMP_VAL_BE_HRS_HDR : SMP_VAL_FE_HRS_HDR,
+				       file, linenum);
+
+		free(proxy->conf.lfs_file);
+		proxy->conf.lfs_file = strdup(proxy->conf.args.file);
+		proxy->conf.lfs_line = proxy->conf.args.line;
+		cur_arg += 3;
 	} else if (strcmp(args[0], "del-header") == 0) {
 		rule->action = HTTP_RES_ACT_DEL_HDR;
 		cur_arg = 1;
@@ -9464,7 +9629,7 @@ struct http_res_rule *parse_http_res_cond(const char **args, const char *file, i
 			goto out_err;
 		}
 	} else {
-		Alert("parsing [%s:%d]: 'http-response' expects 'allow', 'deny', 'redirect', 'add-header', 'del-header', 'set-header', 'set-nice', 'set-tos', 'set-mark', 'set-log-level', 'del-acl', 'add-acl', 'del-map', 'set-map', but got '%s'%s.\n",
+		Alert("parsing [%s:%d]: 'http-response' expects 'allow', 'deny', 'redirect', 'add-header', 'del-header', 'set-header', 'replace-header', 'replace-value', 'set-nice', 'set-tos', 'set-mark', 'set-log-level', 'del-acl', 'add-acl', 'del-map', 'set-map', but got '%s'%s.\n",
 		      file, linenum, args[0], *args[0] ? "" : " (missing argument)");
 		goto out_err;
 	}
