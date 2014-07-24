@@ -2143,22 +2143,22 @@ int parse_qvalue(const char *qvalue, const char **end)
 {
 	int q = 1000;
 
-	if (!isdigit(*qvalue))
+	if (!isdigit((unsigned char)*qvalue))
 		goto out;
 	q = (*qvalue++ - '0') * 1000;
 
 	if (*qvalue++ != '.')
 		goto out;
 
-	if (!isdigit(*qvalue))
+	if (!isdigit((unsigned char)*qvalue))
 		goto out;
 	q += (*qvalue++ - '0') * 100;
 
-	if (!isdigit(*qvalue))
+	if (!isdigit((unsigned char)*qvalue))
 		goto out;
 	q += (*qvalue++ - '0') * 10;
 
-	if (!isdigit(*qvalue))
+	if (!isdigit((unsigned char)*qvalue))
 		goto out;
 	q += (*qvalue++ - '0') * 1;
  out:
@@ -4808,7 +4808,6 @@ void http_end_txn_clean_session(struct session *s)
 
 	s->logs.t_close = tv_ms_elapsed(&s->logs.tv_accept, &now);
 	session_process_counters(s);
-	session_stop_content_counters(s);
 
 	if (s->txn.status) {
 		int n;
@@ -4842,6 +4841,8 @@ void http_end_txn_clean_session(struct session *s)
 		s->do_log(s);
 	}
 
+	/* stop tracking content-based counters */
+	session_stop_content_counters(s);
 	session_update_time_stats(s);
 
 	s->logs.accept_date = date; /* user-visible date for logging */
@@ -4884,7 +4885,7 @@ void http_end_txn_clean_session(struct session *s)
 	s->req->cons->conn_retries = 0;  /* used for logging too */
 	s->req->cons->exp       = TICK_ETERNITY;
 	s->req->cons->flags    &= SI_FL_DONT_WAKE; /* we're in the context of process_session */
-	s->req->flags &= ~(CF_SHUTW|CF_SHUTW_NOW|CF_AUTO_CONNECT|CF_WRITE_ERROR|CF_STREAMER|CF_STREAMER_FAST|CF_NEVER_WAIT|CF_WAKE_CONNECT|CF_READ_NOEXP);
+	s->req->flags &= ~(CF_SHUTW|CF_SHUTW_NOW|CF_AUTO_CONNECT|CF_WRITE_ERROR|CF_STREAMER|CF_STREAMER_FAST|CF_NEVER_WAIT|CF_WAKE_CONNECT);
 	s->rep->flags &= ~(CF_SHUTR|CF_SHUTR_NOW|CF_READ_ATTACHED|CF_READ_ERROR|CF_READ_NOEXP|CF_STREAMER|CF_STREAMER_FAST|CF_WRITE_PARTIAL|CF_NEVER_WAIT);
 	s->flags &= ~(SN_DIRECT|SN_ASSIGNED|SN_ADDR_SET|SN_BE_ASSIGNED|SN_FORCE_PRST|SN_IGNORE_PRST);
 	s->flags &= ~(SN_CURR_SESS|SN_REDIRECTABLE|SN_SRV_REUSED);
@@ -5305,13 +5306,6 @@ int http_request_forward_body(struct session *s, struct channel *req, int an_bit
 		 */
 		msg->msg_state = HTTP_MSG_ERROR;
 		http_resync_states(s);
-
-		if (req->flags & CF_READ_TIMEOUT)
-			goto cli_timeout;
-
-		if (req->flags & CF_WRITE_TIMEOUT)
-			goto srv_timeout;
-
 		return 1;
 	}
 
@@ -5321,7 +5315,7 @@ int http_request_forward_body(struct session *s, struct channel *req, int an_bit
 	 * an "Expect: 100-continue" header.
 	 */
 
-	if (msg->sov) {
+	if (msg->sov > 0) {
 		/* we have msg->sov which points to the first byte of message
 		 * body, and req->buf.p still points to the beginning of the
 		 * message. We forward the headers now, as we don't need them
@@ -5435,6 +5429,8 @@ int http_request_forward_body(struct session *s, struct channel *req, int an_bit
 			 * such as last chunk of data or trailers.
 			 */
 			b_adv(req->buf, msg->next);
+			if (unlikely(!(s->rep->flags & CF_READ_ATTACHED)))
+				msg->sov -= msg->next;
 			msg->next = 0;
 
 			/* for keep-alive we don't want to forward closes on DONE */
@@ -5478,11 +5474,6 @@ int http_request_forward_body(struct session *s, struct channel *req, int an_bit
 				channel_auto_read(req);
 			}
 
-			/* if we received everything, we don't want to expire anymore */
-			if (msg->msg_state == HTTP_MSG_DONE) {
-				req->flags |= CF_READ_NOEXP;
-				req->rex = TICK_ETERNITY;
-			}
 			return 0;
 		}
 	}
@@ -5490,6 +5481,9 @@ int http_request_forward_body(struct session *s, struct channel *req, int an_bit
  missing_data:
 	/* we may have some pending data starting at req->buf->p */
 	b_adv(req->buf, msg->next);
+	if (unlikely(!(s->rep->flags & CF_READ_ATTACHED)))
+		msg->sov -= msg->next + MIN(msg->chunk_len, req->buf->i);
+
 	msg->next = 0;
 	msg->chunk_len -= channel_forward(req, msg->chunk_len);
 
@@ -5590,68 +5584,6 @@ int http_request_forward_body(struct session *s, struct channel *req, int an_bit
 			s->flags |= SN_FINST_H;
 		else
 			s->flags |= SN_FINST_D;
-	}
-	return 0;
-
- cli_timeout:
-	if (!(s->flags & SN_ERR_MASK))
-		s->flags |= SN_ERR_CLITO;
-
-	if (!(s->flags & SN_FINST_MASK)) {
-		if (txn->rsp.msg_state < HTTP_MSG_ERROR)
-			s->flags |= SN_FINST_H;
-		else
-			s->flags |= SN_FINST_D;
-	}
-
-	if (txn->status > 0) {
-		/* Don't send any error message if something was already sent */
-		stream_int_retnclose(req->prod, NULL);
-	}
-	else {
-		txn->status = 408;
-		stream_int_retnclose(req->prod, http_error_message(s, HTTP_ERR_408));
-	}
-
-	msg->msg_state = HTTP_MSG_ERROR;
-	req->analysers = 0;
-	s->rep->analysers = 0; /* we're in data phase, we want to abort both directions */
-
-	session_inc_http_err_ctr(s);
-	s->fe->fe_counters.failed_req++;
-	s->be->be_counters.failed_req++;
-	if (s->listener->counters)
-		s->listener->counters->failed_req++;
-	return 0;
-
- srv_timeout:
-	if (!(s->flags & SN_ERR_MASK))
-		s->flags |= SN_ERR_SRVTO;
-
-	if (!(s->flags & SN_FINST_MASK)) {
-		if (txn->rsp.msg_state < HTTP_MSG_ERROR)
-			s->flags |= SN_FINST_H;
-		else
-			s->flags |= SN_FINST_D;
-	}
-
-	if (txn->status > 0) {
-		/* Don't send any error message if something was already sent */
-		stream_int_retnclose(req->prod, NULL);
-	}
-	else {
-		txn->status = 504;
-		stream_int_retnclose(req->prod, http_error_message(s, HTTP_ERR_504));
-	}
-
-	msg->msg_state = HTTP_MSG_ERROR;
-	req->analysers = 0;
-	s->rep->analysers = 0; /* we're in data phase, we want to abort both directions */
-
-	s->be->be_counters.failed_resp++;
-	if (objt_server(s->target)) {
-		objt_server(s->target)->counters.failed_resp++;
-		health_adjust(objt_server(s->target), HANA_STATUS_HTTP_READ_TIMEOUT);
 	}
 	return 0;
 }
@@ -5821,11 +5753,8 @@ int http_wait_for_response(struct session *s, struct channel *rep, int an_bit)
 			return 0;
 		}
 
-		/* read/write timeout : return a 504 to the client.
-		 * The write timeout may happen when we're uploading POST
-		 * data that the server is not consuming fast enough.
-		 */
-		else if (rep->flags & (CF_READ_TIMEOUT|CF_WRITE_TIMEOUT)) {
+		/* read timeout : return a 504 to the client. */
+		else if (rep->flags & CF_READ_TIMEOUT) {
 			if (msg->err_pos >= 0)
 				http_capture_bad_message(&s->be->invalid_rep, s, msg, msg->msg_state, s->fe);
 			else if (txn->flags & TX_NOT_FIRST)
@@ -5920,12 +5849,6 @@ int http_wait_for_response(struct session *s, struct channel *rep, int an_bit)
 			/* process_session() will take care of the error */
 			return 0;
 		}
-
-		/* we don't want to expire on the server side first until the client
-		 * has sent all the expected message body.
-		 */
-		if (txn->req.msg_state >= HTTP_MSG_BODY && txn->req.msg_state < HTTP_MSG_DONE)
-			rep->flags |= CF_READ_NOEXP;
 
 		channel_dont_close(rep);
 		rep->flags |= CF_READ_DONTWAIT; /* try to get back here ASAP */
@@ -6575,7 +6498,7 @@ int http_response_forward_body(struct session *s, struct channel *res, int an_bi
 	/* in most states, we should abort in case of early close */
 	channel_auto_close(res);
 
-	if (msg->sov) {
+	if (msg->sov > 0) {
 		/* we have msg->sov which points to the first byte of message
 		 * body, and res->buf.p still points to the beginning of the
 		 * message. We forward the headers now, as we don't need them
@@ -6741,12 +6664,6 @@ int http_response_forward_body(struct session *s, struct channel *res, int an_bi
 					goto return_bad_res;
 				}
 				return 1;
-			}
-
-			/* if we received everything, we don't want to expire anymore */
-			if (msg->msg_state == HTTP_MSG_DONE) {
-				res->flags |= CF_READ_NOEXP;
-				res->rex = TICK_ETERNITY;
 			}
 			return 0;
 		}
@@ -9012,7 +8929,7 @@ struct http_req_rule *parse_http_req_cond(const char **args, const char *file, i
 		cur_arg = 1;
 
 		if (!*args[cur_arg] || !*args[cur_arg+1] || !*args[cur_arg+2] ||
-		    (*args[cur_arg+3] && strcmp(args[cur_arg+2], "if") != 0 && strcmp(args[cur_arg+2], "unless") != 0)) {
+		    (*args[cur_arg+3] && strcmp(args[cur_arg+3], "if") != 0 && strcmp(args[cur_arg+3], "unless") != 0)) {
 			Alert("parsing [%s:%d]: 'http-request %s' expects exactly 3 arguments.\n",
 			      file, linenum, args[0]);
 			goto out_err;
@@ -9836,6 +9753,9 @@ smp_prefetch_http(struct proxy *px, struct session *s, void *l7, unsigned int op
 	return 1;
 }
 
+/* Note: these functinos *do* modify the sample. Even in case of success, at
+ * least the type and uint value are modified.
+ */
 #define CHECK_HTTP_MESSAGE_FIRST() \
 	do { int r = smp_prefetch_http(px, l4, l7, opt, args, smp, 1); if (r <= 0) return r; } while (0)
 
@@ -10336,6 +10256,7 @@ smp_fetch_base(struct proxy *px, struct session *l4, void *l7, unsigned int opt,
 	struct http_txn *txn = l7;
 	char *ptr, *end, *beg;
 	struct hdr_ctx ctx;
+	struct chunk *temp;
 
 	CHECK_HTTP_MESSAGE_FIRST();
 
@@ -10344,9 +10265,10 @@ smp_fetch_base(struct proxy *px, struct session *l4, void *l7, unsigned int opt,
 		return smp_fetch_path(px, l4, l7, opt, args, smp, kw);
 
 	/* OK we have the header value in ctx.line+ctx.val for ctx.vlen bytes */
-	memcpy(trash.str, ctx.line + ctx.val, ctx.vlen);
+	temp = get_trash_chunk();
+	memcpy(temp->str, ctx.line + ctx.val, ctx.vlen);
 	smp->type = SMP_T_STR;
-	smp->data.str.str = trash.str;
+	smp->data.str.str = temp->str;
 	smp->data.str.len = ctx.vlen;
 
 	/* now retrieve the path */
@@ -11309,7 +11231,7 @@ static int sample_conv_q_prefered(const struct arg *args, struct sample *smp)
 	while (1) {
 
 		/* Jump spaces, quit if the end is detected. */
-		while (al < end && isspace(*al))
+		while (al < end && isspace((unsigned char)*al))
 			al++;
 		if (al >= end)
 			break;
@@ -11318,7 +11240,7 @@ static int sample_conv_q_prefered(const struct arg *args, struct sample *smp)
 		token = al;
 
 		/* Look for separator: isspace(), ',' or ';'. Next value if 0 length word. */
-		while (al < end && *al != ';' && *al != ',' && !isspace(*al))
+		while (al < end && *al != ';' && *al != ',' && !isspace((unsigned char)*al))
 			al++;
 		if (al == token)
 			goto expect_comma;
@@ -11347,7 +11269,7 @@ static int sample_conv_q_prefered(const struct arg *args, struct sample *smp)
 look_for_q:
 
 		/* Jump spaces, quit if the end is detected. */
-		while (al < end && isspace(*al))
+		while (al < end && isspace((unsigned char)*al))
 			al++;
 		if (al >= end)
 			goto process_value;
@@ -11366,7 +11288,7 @@ look_for_q:
 		al++;
 
 		/* Jump spaces, process value if the end is detected. */
-		while (al < end && isspace(*al))
+		while (al < end && isspace((unsigned char)*al))
 			al++;
 		if (al >= end)
 			goto process_value;
@@ -11377,7 +11299,7 @@ look_for_q:
 		al++;
 
 		/* Jump spaces, process value if the end is detected. */
-		while (al < end && isspace(*al))
+		while (al < end && isspace((unsigned char)*al))
 			al++;
 		if (al >= end)
 			goto process_value;
@@ -11388,7 +11310,7 @@ look_for_q:
 		al++;
 
 		/* Jump spaces, process value if the end is detected. */
-		while (al < end && isspace(*al))
+		while (al < end && isspace((unsigned char)*al))
 			al++;
 		if (al >= end)
 			goto process_value;
