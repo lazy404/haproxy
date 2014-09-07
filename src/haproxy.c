@@ -1345,21 +1345,7 @@ static struct task *manage_global_listener_queue(struct task *t)
 	return t;
 }
 
-unsigned int cookie_secret=199;
-unsigned int old_cookie_secret=99;
-
-#define UPDATE_COOKIE_INTERVAL 5000
-
-static struct task *update_cookie_secret(struct task *t)
-{
-    old_cookie_secret=cookie_secret;
-    cookie_secret=cookie_secret+(now.tv_sec & 0xbad1dea8) + (now.tv_usec & 0xbad1dea8);
-    
-	t->expire = tick_add(now_ms, MS_TO_TICKS(UPDATE_COOKIE_INTERVAL));
-    
-    //printf("secret %u\n", cookie_secret);
-	return t;
-}
+unsigned int cookie_secret;
 
 int main(int argc, char **argv)
 {
@@ -1568,6 +1554,9 @@ int main(int argc, char **argv)
 			argv[0], (int)limit.rlim_cur, global.maxconn, global.maxsock, global.maxsock);
 	}
 
+	srand((int) pid);
+	cookie_secret=(unsigned int) rand();
+    
 	if (global.mode & (MODE_DAEMON | MODE_SYSTEMD)) {
 		struct proxy *px;
 		int ret = 0;
@@ -1649,24 +1638,6 @@ int main(int argc, char **argv)
 
 	protocol_enable_all();
     
-    /* Task updating secret cookie value */
-    
-	struct task *update_cookie_task;
-
-	if ((update_cookie_task = task_new()) == NULL) {
-		return 1;
-	}
-    
-    srand((int) pid);
-    old_cookie_secret=(unsigned int) rand();
-    cookie_secret=(unsigned int) rand();
-    
-	update_cookie_task->process = update_cookie_secret;
-	update_cookie_task->context = NULL;
-    /* co 61 sekund */
-	update_cookie_task->expire = tick_add(now_ms, MS_TO_TICKS(6123));
-	task_queue(update_cookie_task);
-
 	/*
 	 * That's it : the central polling loop. Run until we stop.
 	 */

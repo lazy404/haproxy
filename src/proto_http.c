@@ -216,6 +216,7 @@ const char *stat_status_codes[STAT_STATUS_SIZE] = {
 	[STAT_STATUS_UNKN] = "UNKN",
 };
 
+
 /* List head of all known action keywords for "http-request" */
 struct http_req_action_kw_list http_req_keywords = {
        .list = LIST_HEAD_INIT(http_req_keywords.list)
@@ -1481,23 +1482,19 @@ int cookie_auth(struct session *s, char *cookie_name, int cookie_name_len)
 
             if((0==memcmp(cookie_name, h, cookie_name_len-1))) {
                 knumer = (int) strtol(p, &tmp, 10);
-                /*
+                /* Debug
                 chunk_printf(&trash, "numer a %d b%d man %d\n", NUMBER_A(numer), NUMBER_B(numer), MANGLE_NUMBER(numer));
                 write(1, trash.str, trash.len);
                 */
                 numer=get_number(s, &cookie_secret);
                 if(MANGLE_NUMBER(numer) == knumer)
                     return 1;
-                
-                numer=get_number(s, &old_cookie_secret);
-                if(MANGLE_NUMBER(numer) == knumer)
-                    return 1;
-            }
+                }
             h=tmp+2;
         }
     }
 
-    /* nie znalezlismy odpowiedniego ciasteczka*/
+    /* No proper cookie found */
     return 0;
 }
 
@@ -8899,16 +8896,6 @@ struct http_req_rule *parse_http_req_cond(const char **args, const char *file, i
 	} else if (!strcmp(args[0], "cookie_auth")) {
 		rule->action = HTTP_REQ_ACT_COOKIE_AUTH;
 		cur_arg = 1;
-
-/*		while(*args[cur_arg]) {
-			if (!strcmp(args[cur_arg], "realm")) {
-				rule->arg.auth.realm = strdup(args[cur_arg + 1]);
-				cur_arg+=2;
-				continue;
-			} else
-				break;
-		}
-*/
 	} else if (!strcmp(args[0], "set-nice")) {
 		rule->action = HTTP_REQ_ACT_SET_NICE;
 		cur_arg = 1;
@@ -10494,9 +10481,6 @@ smp_fetch_cookie_auth(struct proxy *px, struct session *l4, void *l7, unsigned i
                     const struct arg *args, struct sample *smp, const char *kw)
 {
 
-/*	if (!args || args->type != ARGT_USR)
-		return 0;
-*/
 	CHECK_HTTP_MESSAGE_FIRST();
 
 	if (!cookie_auth(l4, px->cookie_auth_name ? px->cookie_auth_name:DEFAULT_COOKIE_AUTH_NAME,\
@@ -10506,7 +10490,6 @@ smp_fetch_cookie_auth(struct proxy *px, struct session *l4, void *l7, unsigned i
 	smp->type = SMP_T_BOOL;
     
 	smp->data.uint = 1;
-	//smp->data.uint = check_user(args->data.usr, 0, l4->txn.auth.user, l4->txn.auth.pass);
 	return 1;
 }
 
@@ -11628,7 +11611,8 @@ static struct sample_fetch_kw_list sample_fetch_keywords = {ILH, {
 	{ "hdr_ip",          smp_fetch_hdr_ip,         ARG2(0,STR,SINT), val_hdr, SMP_T_IPV4, SMP_USE_HRQHV },
 	{ "hdr_val",         smp_fetch_hdr_val,        ARG2(0,STR,SINT), val_hdr, SMP_T_UINT, SMP_USE_HRQHV },
 
-	{ "cookie_auth",       smp_fetch_cookie_auth,  0,                NULL,    SMP_T_BOOL, SMP_USE_HRQHV },
+	/* Cookie auth used to stop bots */
+	{ "cookie_auth",     smp_fetch_cookie_auth,    0,                NULL,    SMP_T_BOOL, SMP_USE_HRQHV },
 
 	{ "http_auth",       smp_fetch_http_auth,      ARG1(1,USR),      NULL,    SMP_T_BOOL, SMP_USE_HRQHV },
 	{ "http_auth_group", smp_fetch_http_auth_grp,  ARG1(1,USR),      NULL,    SMP_T_STR,  SMP_USE_HRQHV },

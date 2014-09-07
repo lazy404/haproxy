@@ -376,9 +376,9 @@ struct proxy {
 	} conf;					/* config information */
 	void *parent;				/* parent of the proxy when applicable */
 	struct comp *comp;			/* http compression */
-	char *cookie_auth_name;			/* cookie_auth cookie name */
-    int cookie_auth_name_len;       /* cookie_auth cookie name len*/
-	char *cookie_auth_template;			/* cookie_auth cookie template */
+	char *cookie_auth_name;     /* cookie_auth cookie name */
+	int cookie_auth_name_len;   /* cookie_auth cookie name len*/
+	char *cookie_auth_template; /* cookie_auth cookie template */
 };
 
 struct switching_rule {
