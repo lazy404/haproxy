@@ -2,9 +2,9 @@
                                 HAProxy
                           Configuration Manual
                          ----------------------
-                             version 1.5.4
+                             version 1.5.8
                              willy tarreau
-                              2014/09/02
+                              2014/10/31
 
 
 This document covers the configuration language as implemented in the version
@@ -657,6 +657,15 @@ ssl-default-bind-ciphers <ciphers>
   as "AES:ALL:!aNULL:!eNULL:+RC4:@STRENGTH" (without quotes). Please check the
   "bind" keyword for more information.
 
+ssl-default-bind-options [<option>]...
+  This setting is only available when support for OpenSSL was built in. It sets
+  default ssl-options to force on all "bind" lines. Please check the "bind"
+  keyword to see available options.
+
+  Example:
+        global
+           ssl-default-bind-options no-sslv3 no-tls-tickets
+
 ssl-default-server-ciphers <ciphers>
   This setting is only available when support for OpenSSL was built in. It
   sets the default string describing the list of cipher algorithms that are
@@ -664,6 +673,11 @@ ssl-default-server-ciphers <ciphers>
   lines which do not explicitly define theirs. The format of the string is
   defined in "man 1 ciphers". Please check the "server" keyword for more
   information.
+
+ssl-default-server-options [<option>]...
+  This setting is only available when support for OpenSSL was built in. It sets
+  default ssl-options to force on all "server" lines. Please check the "server"
+  keyword to see available options.
 
 ssl-server-verify [none|required]
   The default behavior for SSL verify on servers side. If specified to 'none',
@@ -1904,6 +1918,10 @@ bind-process [ all | odd | even | <number 1-64>[-<number 1-64>] ] ...
 
   Each "bind" line may further be limited to a subset of the proxy's processes,
   please consult the "process" bind keyword in section 5.1.
+
+  When a frontend has no explicit "bind-process" line, it tries to bind to all
+  the processes referenced by its "bind" lines. That means that frontends can
+  easily adapt to their listeners' processes.
 
   If some backends are referenced by frontends bound to other processes, the
   backend automatically inherits the frontend's processes.
@@ -7470,9 +7488,9 @@ tcp-request content <action> [{if | unless} <condition>]
   contents will always be immediately present when the rule is evaluated first.
 
   Tracking layer7 information is also possible provided that the information
-  are present when the rule is processed. The current solution for making the
-  rule engine wait for such information is to set an inspect delay and to
-  condition its execution with an ACL relying on such information.
+  are present when the rule is processed. The rule processing engine is able to
+  wait until the inspect delay expires when the data to be tracked is not yet
+  available.
 
   Example:
         # Accept HTTP requests containing a Host header saying "example.com"
@@ -7497,12 +7515,12 @@ tcp-request content <action> [{if | unless} <condition>]
   Example:
         # Track the last IP from X-Forwarded-For
         tcp-request inspect-delay 10s
-        tcp-request content track-sc0 hdr(x-forwarded-for,-1) if HTTP
+        tcp-request content track-sc0 hdr(x-forwarded-for,-1)
 
   Example:
         # track request counts per "base" (concatenation of Host+URL)
         tcp-request inspect-delay 10s
-        tcp-request content track-sc0 base table req-rate if HTTP
+        tcp-request content track-sc0 base table req-rate
 
   Example: track per-frontend and per-backend counters, block abusers at the
            frontend when the backend detects abuse.
@@ -8375,19 +8393,23 @@ defer-accept
 force-sslv3
   This option enforces use of SSLv3 only on SSL connections instantiated from
   this listener. SSLv3 is generally less expensive than the TLS counterparts
-  for high connection rates. See also "force-tls*", "no-sslv3", and "no-tls*".
+  for high connection rates. This option is also available on global statement
+  "ssl-default-bind-options". See also "no-tlsv*" and "no-sslv3".
 
 force-tlsv10
   This option enforces use of TLSv1.0 only on SSL connections instantiated from
-  this listener. See also "force-tls*", "no-sslv3", and "no-tls*".
+  this listener. This option is also available on global statement
+  "ssl-default-bind-options". See also "no-tlsv*" and "no-sslv3".
 
 force-tlsv11
   This option enforces use of TLSv1.1 only on SSL connections instantiated from
-  this listener. See also "force-tls*", "no-sslv3", and "no-tls*".
+  this listener. This option is also available on global statement
+  "ssl-default-bind-options". See also "no-tlsv*", and "no-sslv3".
 
 force-tlsv12
   This option enforces use of TLSv1.2 only on SSL connections instantiated from
-  this listener. See also "force-tls*", "no-sslv3", and "no-tls*".
+  this listener. This option is also available on global statement
+  "ssl-default-bind-options". See also "no-tlsv*", and "no-sslv3".
 
 gid <gid>
   Sets the group of the UNIX sockets to the designated system gid. It can also
@@ -8480,35 +8502,40 @@ no-sslv3
   This setting is only available when support for OpenSSL was built in. It
   disables support for SSLv3 on any sockets instantiated from the listener when
   SSL is supported. Note that SSLv2 is forced disabled in the code and cannot
-  be enabled using any configuration option. See also "force-tls*",
+  be enabled using any configuration option. This option is also available on
+  global statement "ssl-default-bind-options". See also "force-tls*",
   and "force-sslv3".
 
 no-tls-tickets
   This setting is only available when support for OpenSSL was built in. It
   disables the stateless session resumption (RFC 5077 TLS Ticket
   extension) and force to use stateful session resumption. Stateless
-  session resumption is more expensive in CPU usage.
+  session resumption is more expensive in CPU usage. This option is also
+  available on global statement "ssl-default-bind-options".
 
 no-tlsv10
   This setting is only available when support for OpenSSL was built in. It
   disables support for TLSv1.0 on any sockets instantiated from the listener
   when SSL is supported. Note that SSLv2 is forced disabled in the code and
-  cannot be enabled using any configuration option. See also "force-tls*",
-  and "force-sslv3".
+  cannot be enabled using any configuration option. This option is also
+  available on global statement "ssl-default-bind-options". See also
+  "force-tlsv*", and "force-sslv3".
 
 no-tlsv11
   This setting is only available when support for OpenSSL was built in. It
   disables support for TLSv1.1 on any sockets instantiated from the listener
   when SSL is supported. Note that SSLv2 is forced disabled in the code and
-  cannot be enabled using any configuration option. See also "force-tls*",
-  and "force-sslv3".
+  cannot be enabled using any configuration option. This option is also
+  available on global statement "ssl-default-bind-options". See also
+  "force-tlsv*", and "force-sslv3".
 
 no-tlsv12
   This setting is only available when support for OpenSSL was built in. It
   disables support for TLSv1.2 on any sockets instantiated from the listener
   when SSL is supported. Note that SSLv2 is forced disabled in the code and
-  cannot be enabled using any configuration option. See also "force-tls*",
-  and "force-sslv3".
+  cannot be enabled using any configuration option. This option is also
+  available on global statement "ssl-default-bind-options". See also
+  "force-tlsv*", and "force-sslv3".
 
 npn <protocols>
   This enables the NPN TLS extension and advertises the specified protocol list
@@ -8645,7 +8672,9 @@ agent-check
 
   - An ASCII representation of a positive integer percentage, e.g. "75%".
     Values in this format will set the weight proportional to the initial
-    weight of a server as configured when haproxy starts.
+    weight of a server as configured when haproxy starts. Note that a zero
+    weight is reported on the stats page as "DRAIN" since it has the same
+    effect on the server (it's removed from the LB farm).
 
   - The word "ready". This will turn the server's administrative state to the
     READY mode, thus cancelling any DRAIN or MAINT state
@@ -8839,25 +8868,29 @@ fall <count>
 force-sslv3
   This option enforces use of SSLv3 only when SSL is used to communicate with
   the server. SSLv3 is generally less expensive than the TLS counterparts for
-  high connection rates. See also "no-tlsv*", "no-sslv3".
+  high connection rates. This option is also available on global statement
+  "ssl-default-server-options". See also "no-tlsv*", "no-sslv3".
 
   Supported in default-server: No
 
 force-tlsv10
   This option enforces use of TLSv1.0 only when SSL is used to communicate with
-  the server. See also "no-tlsv*", "no-sslv3".
+  the server. This option is also available on global statement
+  "ssl-default-server-options". See also "no-tlsv*", "no-sslv3".
 
   Supported in default-server: No
 
 force-tlsv11
   This option enforces use of TLSv1.1 only when SSL is used to communicate with
-  the server. See also "no-tlsv*", "no-sslv3".
+  the server. This option is also available on global statement
+  "ssl-default-server-options". See also "no-tlsv*", "no-sslv3".
 
   Supported in default-server: No
 
 force-tlsv12
   This option enforces use of TLSv1.2 only when SSL is used to communicate with
-  the server. See also "no-tlsv*", "no-sslv3".
+  the server. This option is also available on global statement
+  "ssl-default-server-options". See also "no-tlsv*", "no-sslv3".
 
   Supported in default-server: No
 
@@ -8945,7 +8978,8 @@ no-tls-tickets
   This setting is only available when support for OpenSSL was built in. It
   disables the stateless session resumption (RFC 5077 TLS Ticket
   extension) and force to use stateful session resumption. Stateless
-  session resumption is more expensive in CPU usage for servers.
+  session resumption is more expensive in CPU usage for servers. This option
+  is also available on global statement "ssl-default-server-options".
 
   Supported in default-server: No
 
@@ -8953,8 +8987,9 @@ no-tlsv10
   This option disables support for TLSv1.0 when SSL is used to communicate with
   the server. Note that SSLv2 is disabled in the code and cannot be enabled
   using any configuration option. TLSv1 is more expensive than SSLv3 so it
-  often makes sense to disable it when communicating with local servers. See
-  also "force-sslv3", "force-tlsv*".
+  often makes sense to disable it when communicating with local servers. This
+  option is also available on global statement "ssl-default-server-options".
+  See also "force-sslv3", "force-tlsv*".
 
   Supported in default-server: No
 
@@ -8962,8 +8997,9 @@ no-tlsv11
   This option disables support for TLSv1.1 when SSL is used to communicate with
   the server. Note that SSLv2 is disabled in the code and cannot be enabled
   using any configuration option. TLSv1 is more expensive than SSLv3 so it
-  often makes sense to disable it when communicating with local servers. See
-  also "force-sslv3", "force-tlsv*".
+  often makes sense to disable it when communicating with local servers. This
+  option is also available on global statement "ssl-default-server-options".
+  See also "force-sslv3", "force-tlsv*".
 
   Supported in default-server: No
 
@@ -8971,8 +9007,9 @@ no-tlsv12
   This option disables support for TLSv1.2 when SSL is used to communicate with
   the server. Note that SSLv2 is disabled in the code and cannot be enabled
   using any configuration option. TLSv1 is more expensive than SSLv3 so it
-  often makes sense to disable it when communicating with local servers. See
-  also "force-sslv3", "force-tlsv*".
+  often makes sense to disable it when communicating with local servers. This
+  option is also available on global statement "ssl-default-server-options".
+  See also "force-sslv3", "force-tlsv*".
 
   Supported in default-server: No
 
@@ -10675,6 +10712,11 @@ ssl_c_ca_err_depth : integer
   verification of the client certificate. If no error is encountered, 0 is
   returned.
 
+ssl_c_der : binary
+  Returns the DER formatted certificate presented by the client when the
+  incoming connection was made over an SSL/TLS transport layer. When used for
+  an ACL, the value(s) to match against can be passed in hexadecimal form.
+
 ssl_c_err : integer
   When the incoming connection was made over an SSL/TLS transport layer,
   returns the ID of the first error detected during verification at depth 0, or
@@ -10749,6 +10791,11 @@ ssl_c_verify : integer
 ssl_c_version : integer
   Returns the version of the certificate presented by the client when the
   incoming connection was made over an SSL/TLS transport layer.
+
+ssl_f_der : binary
+  Returns the DER formatted certificate presented by the frontend when the
+  incoming connection was made over an SSL/TLS transport layer. When used for
+  an ACL, the value(s) to match against can be passed in hexadecimal form.
 
 ssl_f_i_dn([<entry>[,<occ>]]) : string
   When the incoming connection was made over an SSL/TLS transport layer,
@@ -13734,9 +13781,11 @@ show sess <id>
   of "show sess" (it corresponds to the session pointer). Those information are
   useless to most users but may be used by haproxy developers to troubleshoot a
   complex bug. The output format is intentionally not documented so that it can
-  freely evolve depending on demands. The special id "all" dumps the states of
-  all sessions, which can be avoided as much as possible as it is highly CPU
-  intensive and can take a lot of time.
+  freely evolve depending on demands. You may find a description of all fields
+  returned in src/dumpstats.c
+
+  The special id "all" dumps the states of all sessions, which must be avoided
+  as much as possible as it is highly CPU intensive and can take a lot of time.
 
 show stat [<iid> <type> <sid>]
   Dump statistics in the CSV format. By passing <id>, <type> and <sid>, it is
