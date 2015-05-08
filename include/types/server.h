@@ -43,7 +43,7 @@
 #include <types/checks.h>
 
 
-/* server states. Only SRV_ST_DOWN indicates a down server. */
+/* server states. Only SRV_ST_STOPPED indicates a down server. */
 enum srv_state {
 	SRV_ST_STOPPED = 0,              /* the server is down. Please keep set to zero. */
 	SRV_ST_STARTING,                 /* the server is warming up (up but throttled) */
@@ -194,7 +194,6 @@ struct server {
 
 	struct {                                /* configuration  used by health-check and agent-check */
 		struct protocol *proto;	        /* server address protocol for health checks */
-		struct xprt_ops *xprt;          /* transport layer operations for health checks */
 		struct sockaddr_storage addr;   /* the address to check, if different from <addr> */
 	} check_common;
 

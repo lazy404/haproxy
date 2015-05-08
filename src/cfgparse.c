@@ -151,6 +151,7 @@ static const struct cfg_opt cfg_opts[] =
 	{ "contstats",    PR_O_CONTSTATS,  PR_CAP_FE, 0, 0 },
 	{ "dontlognull",  PR_O_NULLNOLOG,  PR_CAP_FE, 0, 0 },
 	{ "http_proxy",	  PR_O_HTTP_PROXY, PR_CAP_FE | PR_CAP_BE, 0, PR_MODE_HTTP },
+	{ "http-ignore-probes", PR_O_IGNORE_PRB, PR_CAP_FE, 0, PR_MODE_HTTP },
 	{ "prefer-last-server", PR_O_PREF_LAST,  PR_CAP_BE, 0, PR_MODE_HTTP },
 	{ "logasap",      PR_O_LOGASAP,    PR_CAP_FE, 0, 0 },
 	{ "nolinger",     PR_O_TCP_NOLING, PR_CAP_FE | PR_CAP_BE, 0, 0 },
@@ -1743,6 +1744,7 @@ int cfg_parse_peers(const char *file, int linenum, char **args, int kwm)
 		curpeers->conf.line = linenum;
 		curpeers->last_change = now.tv_sec;
 		curpeers->id = strdup(args[1]);
+		curpeers->state = PR_STNEW;
 	}
 	else if (strcmp(args[0], "peer") == 0) { /* peer definition */
 		struct sockaddr_storage *sk;
@@ -1834,7 +1836,7 @@ int cfg_parse_peers(const char *file, int linenum, char **args, int kwm)
 				curpeers->peers_fe->cap = PR_CAP_FE;
 				curpeers->peers_fe->maxconn = 0;
 				curpeers->peers_fe->conn_retries = CONN_RETRIES;
-				curpeers->peers_fe->timeout.connect = 5000;
+				curpeers->peers_fe->timeout.client = MS_TO_TICKS(5000);
 				curpeers->peers_fe->accept = peer_accept;
 				curpeers->peers_fe->options2 |= PR_O2_INDEPSTR | PR_O2_SMARTCON | PR_O2_SMARTACC;
 				curpeers->peers_fe->conf.args.file = curpeers->peers_fe->conf.file = strdup(file);
@@ -1875,6 +1877,12 @@ int cfg_parse_peers(const char *file, int linenum, char **args, int kwm)
 			}
 		}
 	} /* neither "peer" nor "peers" */
+	else if (!strcmp(args[0], "disabled")) {  /* disables this peers section */
+		curpeers->state = PR_STSTOPPED;
+	}
+	else if (!strcmp(args[0], "enabled")) {  /* enables this peers section (used to revert a disabled default) */
+		curpeers->state = PR_STNEW;
+	}
 	else if (*args[0] != 0) {
 		Alert("parsing [%s:%d] : unknown keyword '%s' in '%s' section\n", file, linenum, args[0], cursection);
 		err_code |= ERR_ALERT | ERR_FATAL;
@@ -2003,7 +2011,6 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 		curproxy->no_options = defproxy.no_options;
 		curproxy->no_options2 = defproxy.no_options2;
 		curproxy->bind_proc = defproxy.bind_proc;
-		curproxy->lbprm.algo = defproxy.lbprm.algo;
 		curproxy->except_net = defproxy.except_net;
 		curproxy->except_mask = defproxy.except_mask;
 		curproxy->except_to = defproxy.except_to;
@@ -2037,6 +2044,7 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 		}
 
 		if (curproxy->cap & PR_CAP_BE) {
+			curproxy->lbprm.algo = defproxy.lbprm.algo;
 			curproxy->fullconn = defproxy.fullconn;
 			curproxy->conn_retries = defproxy.conn_retries;
 			curproxy->max_ka_queue = defproxy.max_ka_queue;
@@ -6075,7 +6083,10 @@ void propagate_processes(struct proxy *from, struct proxy *to)
 		from = to;
 	}
 
-	if (!from->cap & PR_CAP_FE)
+	if (!(from->cap & PR_CAP_FE))
+		return;
+
+	if (from->state == PR_STSTOPPED)
 		return;
 
 	/* default_backend */
@@ -6173,6 +6184,8 @@ int check_config_validity()
 		if (curproxy->state == PR_STSTOPPED) {
 			/* ensure we don't keep listeners uselessly bound */
 			stop_proxy(curproxy);
+			free((void *)curproxy->table.peers.name);
+			curproxy->table.peers.p = NULL;
 			continue;
 		}
 
@@ -6590,6 +6603,10 @@ int check_config_validity()
 				curproxy->table.peers.p = NULL;
 				cfgerr++;
 			}
+			else if (curpeers->state == PR_STSTOPPED) {
+				/* silently disable this peers section */
+				curproxy->table.peers.p = NULL;
+			}
 			else if (!curpeers->peers_fe) {
 				Alert("Proxy '%s': unable to find local peer '%s' in peers section '%s'.\n",
 				      curproxy->id, localpeer, curpeers->id);
@@ -6670,7 +6687,7 @@ out_uri_auth_compat:
 			curproxy->conf.args.file = curproxy->conf.uif_file;
 			curproxy->conf.args.line = curproxy->conf.uif_line;
 			parse_logformat_string(curproxy->conf.uniqueid_format_string, curproxy, &curproxy->format_unique_id, LOG_OPT_HTTP,
-					       (proxy->cap & PR_CAP_FE) ? SMP_VAL_FE_HRQ_HDR : SMP_VAL_BE_HRQ_HDR,
+					       (curproxy->cap & PR_CAP_FE) ? SMP_VAL_FE_HRQ_HDR : SMP_VAL_BE_HRQ_HDR,
 					       curproxy->conf.uif_file, curproxy->conf.uif_line);
 			curproxy->conf.args.file = NULL;
 			curproxy->conf.args.line = 0;
@@ -6917,7 +6934,6 @@ out_uri_auth_compat:
 					newsrv->admin |= SRV_ADMF_IMAINT;
 					newsrv->state = SRV_ST_STOPPED;
 					newsrv->check.health = 0;
-					newsrv->agent.health = 0;
 				}
 
 				newsrv->track = srv;
@@ -7433,20 +7449,6 @@ out_uri_auth_compat:
 		}
 	}
 
-	/* initialize stick-tables on backend capable proxies. This must not
-	 * be done earlier because the data size may be discovered while parsing
-	 * other proxies.
-	 */
-	for (curproxy = proxy; curproxy; curproxy = curproxy->next) {
-		if (curproxy->state == PR_STSTOPPED)
-			continue;
-
-		if (!stktable_init(&curproxy->table)) {
-			Alert("Proxy '%s': failed to initialize stick-table.\n", curproxy->id);
-			cfgerr++;
-		}
-	}
-
 	/*
 	 * Recount currently required checks.
 	 */
@@ -7474,14 +7476,23 @@ out_uri_auth_compat:
 		last = &peers;
 		while (*last) {
 			curpeers = *last;
-			if (curpeers->peers_fe) {
+
+			if (curpeers->state == PR_STSTOPPED) {
+				/* the "disabled" keyword was present */
+				if (curpeers->peers_fe)
+					stop_proxy(curpeers->peers_fe);
+				curpeers->peers_fe = NULL;
+			}
+			else if (!curpeers->peers_fe) {
+				Warning("Removing incomplete section 'peers %s' (no peer named '%s').\n",
+					curpeers->id, localpeer);
+			}
+			else {
 				last = &curpeers->next;
 				continue;
 			}
 
-			Warning("Removing incomplete section 'peers %s' (no peer named '%s').\n",
-				curpeers->id, localpeer);
-
+			/* clean what has been detected above */
 			p = curpeers->remote;
 			while (p) {
 				pb = p->next;
@@ -7497,6 +7508,20 @@ out_uri_auth_compat:
 			curpeers = curpeers->next;
 			free(*last);
 			*last = curpeers;
+		}
+	}
+
+	/* initialize stick-tables on backend capable proxies. This must not
+	 * be done earlier because the data size may be discovered while parsing
+	 * other proxies.
+	 */
+	for (curproxy = proxy; curproxy; curproxy = curproxy->next) {
+		if (curproxy->state == PR_STSTOPPED)
+			continue;
+
+		if (!stktable_init(&curproxy->table)) {
+			Alert("Proxy '%s': failed to initialize stick-table.\n", curproxy->id);
+			cfgerr++;
 		}
 	}
 

@@ -1109,6 +1109,8 @@ static int stats_sock_parse_request(struct stream_interface *si, char *line)
 		arg++;
 	}
 
+	appctx->ctx.stats.scope_str = 0;
+	appctx->ctx.stats.scope_len = 0;
 	appctx->ctx.stats.flags = 0;
 	if (strcmp(args[0], "show") == 0) {
 		if (strcmp(args[1], "stat") == 0) {
@@ -1295,8 +1297,7 @@ static int stats_sock_parse_request(struct stream_interface *si, char *line)
 			pat_ref_prune(appctx->ctx.map.ref);
 
 			/* return response */
-			appctx->ctx.cli.msg = "Done.\n";
-			appctx->st0 = STAT_CLI_PRINT;
+			appctx->st0 = STAT_CLI_PROMPT;
 			return 1;
 		}
 		else {
@@ -1788,8 +1789,7 @@ static int stats_sock_parse_request(struct stream_interface *si, char *line)
 			}
 
 			/* The set is done, send message. */
-			appctx->ctx.cli.msg = "Done.\n";
-			appctx->st0 = STAT_CLI_PRINT;
+			appctx->st0 = STAT_CLI_PROMPT;
 			return 1;
 		}
 #ifdef USE_OPENSSL
@@ -2138,8 +2138,7 @@ static int stats_sock_parse_request(struct stream_interface *si, char *line)
 			}
 
 			/* The deletion is done, send message. */
-			appctx->ctx.cli.msg = "Done.\n";
-			appctx->st0 = STAT_CLI_PRINT;
+			appctx->st0 = STAT_CLI_PROMPT;
 			return 1;
 		}
 		else { /* unknown "del" parameter */
@@ -2215,8 +2214,7 @@ static int stats_sock_parse_request(struct stream_interface *si, char *line)
 			}
 
 			/* The add is done, send message. */
-			appctx->ctx.cli.msg = "Done.\n";
-			appctx->st0 = STAT_CLI_PRINT;
+			appctx->st0 = STAT_CLI_PROMPT;
 			return 1;
 		}
 		else { /* unknown "del" parameter */
@@ -2496,7 +2494,7 @@ static int stats_dump_info_to_buffer(struct stream_interface *si)
 	             "Hard_maxconn: %d\n"
 	             "CurrConns: %d\n"
 		     "CumConns: %d\n"
-		     "CumReq: %d\n"
+		     "CumReq: %u\n"
 #ifdef USE_OPENSSL
 		     "MaxSslConns: %d\n"
 	             "CurrSslConns: %d\n"
@@ -3110,7 +3108,7 @@ static int stats_dump_sv_stats(struct stream_interface *si, struct proxy *px, in
 			chunk_appendf(&trash, "%s ", human_time(now.tv_sec - sv->last_change, 1));
 			chunk_appendf(&trash, "MAINT");
 		}
-		else if ((ref->agent.state & CHK_ST_ENABLED) && (ref->state == SRV_ST_STOPPED)) {
+		else if ((ref->agent.state & CHK_ST_ENABLED) && !(sv->agent.health) && (ref->state == SRV_ST_STOPPED)) {
 			chunk_appendf(&trash, "%s ", human_time(now.tv_sec - ref->last_change, 1));
 			/* DOWN (agent) */
 			chunk_appendf(&trash, srv_hlt_st[1], "GCC: your -Werror=format-security is bogus, annoying, and hides real bugs, I don't thank you, really!");

@@ -246,7 +246,7 @@ static void set_server_check_status(struct check *check, short status, const cha
 		 * cause the server to be marked down.
 		 */
 		if ((!(check->state & CHK_ST_AGENT) ||
-		    (check->status >= HCHK_STATUS_L7TOUT)) &&
+		    (check->status >= HCHK_STATUS_L57DATA)) &&
 		    (check->health >= check->rise)) {
 			s->counters.failed_checks++;
 			report = 1;
@@ -1381,6 +1381,7 @@ static int connect_chk(struct task *t)
 	struct connection *conn = check->conn;
 	struct protocol *proto;
 	int ret;
+	int quickack;
 
 	/* tcpcheck send/expect initialisation */
 	if (check->type == PR_O2_TCPCHK_CHK)
@@ -1406,6 +1407,9 @@ static int connect_chk(struct task *t)
 		else if ((check->type) == PR_O2_HTTP_CHK) {
 			if (s->proxy->options2 & PR_O2_CHK_SNDST)
 				bo_putblk(check->bo, trash.str, httpchk_build_status_header(s, trash.str, trash.size));
+			/* prevent HTTP keep-alive when "http-check expect" is used */
+			if (s->proxy->options2 & PR_O2_EXP_TYPE)
+				bo_putstr(check->bo, "Connection: close\r\n");
 			bo_putstr(check->bo, "\r\n");
 			*check->bo->p = '\0'; /* to make gdb output easier to read */
 		}
@@ -1413,7 +1417,7 @@ static int connect_chk(struct task *t)
 
 	/* prepare a new connection */
 	conn_init(conn);
-	conn_prepare(conn, s->check_common.proto, s->check_common.xprt);
+	conn_prepare(conn, s->check_common.proto, check->xprt);
 	conn_attach(conn, check, &check_conn_cb);
 	conn->target = &s->obj_type;
 
@@ -1436,18 +1440,23 @@ static int connect_chk(struct task *t)
 		set_host_port(&conn->addr.to, check->port);
 	}
 
-	if (check->type == PR_O2_TCPCHK_CHK) {
+	/* only plain tcp-check supports quick ACK */
+	quickack = check->type == 0 || check->type == PR_O2_TCPCHK_CHK;
+
+	if (check->type == PR_O2_TCPCHK_CHK && !LIST_ISEMPTY(&s->proxy->tcpcheck_rules)) {
 		struct tcpcheck_rule *r = (struct tcpcheck_rule *) s->proxy->tcpcheck_rules.n;
 		/* if first step is a 'connect', then tcpcheck_main must run it */
 		if (r->action == TCPCHK_ACT_CONNECT) {
 			tcpcheck_main(conn);
 			return SN_ERR_UP;
 		}
+		if (r->action == TCPCHK_ACT_EXPECT)
+			quickack = 0;
 	}
 
 	ret = SN_ERR_INTERNAL;
 	if (proto->connect)
-		ret = proto->connect(conn, check->type, (check->type) ? 0 : 2);
+		ret = proto->connect(conn, check->type, quickack ? 2 : 0);
 	conn->flags |= CO_FL_WAKE_DATA;
 	if (s->check.send_proxy) {
 		conn->send_proxy_ofs = 1;
@@ -1850,7 +1859,7 @@ static int tcpcheck_get_step_id(struct server *s)
 static void tcpcheck_main(struct connection *conn)
 {
 	char *contentptr;
-	struct tcpcheck_rule *cur = NULL;
+	struct tcpcheck_rule *cur, *next;
 	int done = 0, ret = 0;
 	struct check *check = conn->owner;
 	struct server *s = check->server;
@@ -1946,6 +1955,11 @@ static void tcpcheck_main(struct connection *conn)
 			break;
 		}
 
+		/* have 'next' point to the next rule or NULL if we're on the last one */
+		next = (struct tcpcheck_rule *)cur->list.n;
+		if (&next->list == head)
+			next = NULL;
+
 		if (check->current_step->action == TCPCHK_ACT_CONNECT) {
 			struct protocol *proto;
 			struct xprt_ops *xprt;
@@ -1995,7 +2009,9 @@ static void tcpcheck_main(struct connection *conn)
 
 			ret = SN_ERR_INTERNAL;
 			if (proto->connect)
-				ret = proto->connect(conn, check->type, (check->type) ? 0 : 2);
+				ret = proto->connect(conn,
+						     1 /* I/O polling is always needed */,
+						     (next && next->action == TCPCHK_ACT_EXPECT) ? 0 : 2);
 			conn->flags |= CO_FL_WAKE_DATA;
 			if (check->current_step->conn_opts & TCPCHK_OPT_SEND_PROXY) {
 				conn->send_proxy_ofs = 1;
