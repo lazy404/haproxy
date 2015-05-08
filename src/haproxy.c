@@ -216,7 +216,7 @@ unsigned int warned = 0;
 void display_version()
 {
 	printf("HA-Proxy version " HAPROXY_VERSION " " HAPROXY_DATE"\n");
-	printf("Copyright 2000-2014 Willy Tarreau <w@1wt.eu>\n\n");
+	printf("Copyright 2000-2015 Willy Tarreau <w@1wt.eu>\n\n");
 }
 
 void display_build_opts()
@@ -1579,7 +1579,7 @@ int main(int argc, char **argv)
 
 #ifdef USE_CPU_AFFINITY
 		if (proc < global.nbproc &&  /* child */
-		    proc < 32 &&             /* only the first 32 processes may be pinned */
+		    proc < LONGBITS &&       /* only the first 32/64 processes may be pinned */
 		    global.cpu_map[proc])    /* only do this if the process has a CPU map */
 			sched_setaffinity(0, sizeof(unsigned long), (void *)&global.cpu_map[proc]);
 #endif

@@ -1308,7 +1308,8 @@ static int ssl_sock_load_cert_file(const char *path, struct bind_conf *bind_conf
 
 int ssl_sock_load_cert(char *path, struct bind_conf *bind_conf, struct proxy *curproxy, char **err)
 {
-	struct dirent *de;
+	struct dirent **de_list;
+	int i, n;
 	DIR *dir;
 	struct stat buf;
 	char *end;
@@ -1322,21 +1323,34 @@ int ssl_sock_load_cert(char *path, struct bind_conf *bind_conf, struct proxy *cu
 	for (end = path + strlen(path) - 1; end >= path && *end == '/'; end--)
 		*end = 0;
 
-	while ((de = readdir(dir))) {
-		end = strrchr(de->d_name, '.');
-		if (end && (!strcmp(end, ".issuer") || !strcmp(end, ".ocsp")))
-			continue;
+	n = scandir(path, &de_list, 0, alphasort);
+	if (n < 0) {
+		memprintf(err, "%sunable to scan directory '%s' : %s.\n",
+			  err && *err ? *err : "", path, strerror(errno));
+		cfgerr++;
+	}
+	else {
+		for (i = 0; i < n; i++) {
+			struct dirent *de = de_list[i];
 
-		snprintf(fp, sizeof(fp), "%s/%s", path, de->d_name);
-		if (stat(fp, &buf) != 0) {
-			memprintf(err, "%sunable to stat SSL certificate from file '%s' : %s.\n",
-			          err && *err ? *err : "", fp, strerror(errno));
-			cfgerr++;
-			continue;
+			end = strrchr(de->d_name, '.');
+			if (end && (!strcmp(end, ".issuer") || !strcmp(end, ".ocsp")))
+				goto ignore_entry;
+
+			snprintf(fp, sizeof(fp), "%s/%s", path, de->d_name);
+			if (stat(fp, &buf) != 0) {
+				memprintf(err, "%sunable to stat SSL certificate from file '%s' : %s.\n",
+					  err && *err ? *err : "", fp, strerror(errno));
+				cfgerr++;
+				goto ignore_entry;
+			}
+			if (!S_ISREG(buf.st_mode))
+				goto ignore_entry;
+			cfgerr += ssl_sock_load_cert_file(fp, bind_conf, curproxy, NULL, 0, err);
+	ignore_entry:
+			free(de);
 		}
-		if (!S_ISREG(buf.st_mode))
-			continue;
-		cfgerr += ssl_sock_load_cert_file(fp, bind_conf, curproxy, NULL, 0, err);
+		free(de_list);
 	}
 	closedir(dir);
 	return cfgerr;
@@ -1555,7 +1569,7 @@ int ssl_sock_prepare_ctx(struct bind_conf *bind_conf, SSL_CTX *ctx, struct proxy
 
 			if (!store || !X509_STORE_load_locations(store, bind_conf->crl_file, NULL)) {
 				Alert("Proxy '%s': unable to configure CRL file '%s' for bind '%s' at [%s:%d].\n",
-				      curproxy->id, bind_conf->ca_file, bind_conf->arg, bind_conf->file, bind_conf->line);
+				      curproxy->id, bind_conf->crl_file, bind_conf->arg, bind_conf->file, bind_conf->line);
 				cfgerr++;
 			}
 			else {
@@ -1812,7 +1826,7 @@ int ssl_sock_prepare_srv_ctx(struct server *srv, struct proxy *curproxy)
 	if (srv->use_ssl)
 		srv->xprt = &ssl_sock;
 	if (srv->check.use_ssl)
-		srv->check_common.xprt = &ssl_sock;
+		srv->check.xprt = &ssl_sock;
 
 	srv->ssl_ctx.ctx = SSL_CTX_new(SSLv23_client_method());
 	if (!srv->ssl_ctx.ctx) {
@@ -2033,22 +2047,51 @@ static int ssl_sock_init(struct connection *conn)
 	/* If it is in client mode initiate SSL session
 	   in connect state otherwise accept state */
 	if (objt_server(conn->target)) {
+		int may_retry = 1;
+
+	retry_connect:
 		/* Alloc a new SSL session ctx */
 		conn->xprt_ctx = SSL_new(objt_server(conn->target)->ssl_ctx.ctx);
 		if (!conn->xprt_ctx) {
+			if (may_retry--) {
+				pool_gc2();
+				goto retry_connect;
+			}
+			conn->err_code = CO_ER_SSL_NO_MEM;
+			return -1;
+		}
+
+		/* set fd on SSL session context */
+		if (!SSL_set_fd(conn->xprt_ctx, conn->t.sock.fd)) {
+			SSL_free(conn->xprt_ctx);
+			conn->xprt_ctx = NULL;
+			if (may_retry--) {
+				pool_gc2();
+				goto retry_connect;
+			}
+			conn->err_code = CO_ER_SSL_NO_MEM;
+			return -1;
+		}
+
+		/* set connection pointer */
+		if (!SSL_set_app_data(conn->xprt_ctx, conn)) {
+			SSL_free(conn->xprt_ctx);
+			conn->xprt_ctx = NULL;
+			if (may_retry--) {
+				pool_gc2();
+				goto retry_connect;
+			}
 			conn->err_code = CO_ER_SSL_NO_MEM;
 			return -1;
 		}
 
 		SSL_set_connect_state(conn->xprt_ctx);
-		if (objt_server(conn->target)->ssl_ctx.reused_sess)
-			SSL_set_session(conn->xprt_ctx, objt_server(conn->target)->ssl_ctx.reused_sess);
-
-		/* set fd on SSL session context */
-		SSL_set_fd(conn->xprt_ctx, conn->t.sock.fd);
-
-		/* set connection pointer */
-		SSL_set_app_data(conn->xprt_ctx, conn);
+		if (objt_server(conn->target)->ssl_ctx.reused_sess) {
+			if(!SSL_set_session(conn->xprt_ctx, objt_server(conn->target)->ssl_ctx.reused_sess)) {
+				SSL_SESSION_free(objt_server(conn->target)->ssl_ctx.reused_sess);
+				objt_server(conn->target)->ssl_ctx.reused_sess = NULL;
+			}
+		}
 
 		/* leave init state and start handshake */
 		conn->flags |= CO_FL_SSL_WAIT_HS | CO_FL_WAIT_L6_CONN;
@@ -2058,20 +2101,45 @@ static int ssl_sock_init(struct connection *conn)
 		return 0;
 	}
 	else if (objt_listener(conn->target)) {
+		int may_retry = 1;
+
+	retry_accept:
 		/* Alloc a new SSL session ctx */
 		conn->xprt_ctx = SSL_new(objt_listener(conn->target)->bind_conf->default_ctx);
 		if (!conn->xprt_ctx) {
+			if (may_retry--) {
+				pool_gc2();
+				goto retry_accept;
+			}
+			conn->err_code = CO_ER_SSL_NO_MEM;
+			return -1;
+		}
+
+		/* set fd on SSL session context */
+		if (!SSL_set_fd(conn->xprt_ctx, conn->t.sock.fd)) {
+			SSL_free(conn->xprt_ctx);
+			conn->xprt_ctx = NULL;
+			if (may_retry--) {
+				pool_gc2();
+				goto retry_accept;
+			}
+			conn->err_code = CO_ER_SSL_NO_MEM;
+			return -1;
+		}
+
+		/* set connection pointer */
+		if (!SSL_set_app_data(conn->xprt_ctx, conn)) {
+			SSL_free(conn->xprt_ctx);
+			conn->xprt_ctx = NULL;
+			if (may_retry--) {
+				pool_gc2();
+				goto retry_accept;
+			}
 			conn->err_code = CO_ER_SSL_NO_MEM;
 			return -1;
 		}
 
 		SSL_set_accept_state(conn->xprt_ctx);
-
-		/* set fd on SSL session context */
-		SSL_set_fd(conn->xprt_ctx, conn->t.sock.fd);
-
-		/* set connection pointer */
-		SSL_set_app_data(conn->xprt_ctx, conn);
 
 		/* leave init state and start handshake */
 		conn->flags |= CO_FL_SSL_WAIT_HS | CO_FL_WAIT_L6_CONN;
