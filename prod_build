@@ -1,4 +1,4 @@
 #!/bin/sh -x
 
-make USE_STATIC_PCRE=1 CPU=native USE_TFO=1 USE_OPENSSL=1 PREFIX=/opt/iq/haproxy-1.5 TARGET=linux2628 $@
+make USE_STATIC_PCRE=1 CPU=native USE_PCRE_JIT=1 USE_TFO=1 USE_OPENSSL=1 PREFIX=/opt/iq/haproxy-1.5 TARGET=linux2628 $@
 
